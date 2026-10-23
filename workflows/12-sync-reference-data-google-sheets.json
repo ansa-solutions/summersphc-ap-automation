@@ -1,0 +1,863 @@
+{
+  "id": "AWahyv79GpCdP4fK",
+  "name": "ANSA | 12. Sync Reference Data (Google Sheets)",
+  "nodes": [
+    {
+      "id": "5aaec9b0-a7ed-4daa-93c0-5ce10b6559fa",
+      "name": "Build Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1984,
+        544
+      ],
+      "parameters": {
+        "jsCode": "// Settings come from the summers.datastore.config.keys data table: { CATEGORY: { key: value } }.\nconst parse = v => {\n  if (v === null || v === undefined) return null;\n  const s = String(v).trim();\n  if (/^(true|false)$/i.test(s)) return s.toLowerCase() === 'true';\n  if (/^-?\\d+(\\.\\d+)?$/.test(s)) return Number(s);\n  if (/^[\\[{]/.test(s)) { try { return JSON.parse(s); } catch (e) { /* keep as text */ } }\n  return s;\n};\nconst cfg = {};\nfor (const { json: r } of $input.all()) {\n  if (!r || !r.category || !r.key) continue;\n  (cfg[r.category] ||= {})[r.key] = parse(r.value);\n}\n// Fail loudly if a required setting is missing, rather than running with a guess.\nconst REQUIRED = [\"SHEET_SYNC_CONFIG.spreadsheet_id\", \"SHEET_SYNC_CONFIG.location_tab_gid\", \"SHEET_SYNC_CONFIG.department_tab_gid\", \"SHEET_SYNC_CONFIG.vendor_map_tab_gid\", \"SHEET_SYNC_CONFIG.vendor_map_header_row\", \"SHEET_SYNC_CONFIG.delete_missing_rows\", \"SHEET_SYNC_CONFIG.dry_run\"];\nconst missing = REQUIRED.filter(p => { const [c, k] = p.split('.'); const v = cfg[c]?.[k]; return v === undefined || v === null || v === ''; });\nif (missing.length) throw new Error('Missing settings in summers.datastore.config.keys: ' + missing.join(', '));\nreturn [{ json: { cfg } }];\n"
+      }
+    },
+    {
+      "id": "ea072797-d00b-4a07-9774-830b958dc9a0",
+      "name": "Daily 2:15 AM (Tue-Sat)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -2416,
+        544
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "15 2 * * 2-6"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "02df3644-943c-41ae-ab8b-76a8eff53420",
+      "name": "Delete Department_Code",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        544
+      ],
+      "parameters": {
+        "operation": "deleteRows",
+        "dataTableId": {
+          "__rl": true,
+          "value": "ZF2Q8mU9KnZd3RH9",
+          "mode": "list",
+          "cachedResultName": "Department_Code",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/ZF2Q8mU9KnZd3RH9"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyValue": "={{ $json.id }}"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "64467662-2517-4132-adca-b4906bf17aa6",
+      "name": "Delete Location_Master",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        192
+      ],
+      "parameters": {
+        "operation": "deleteRows",
+        "dataTableId": {
+          "__rl": true,
+          "value": "rtOK1UEM6RUOcEUC",
+          "mode": "list",
+          "cachedResultName": "Location_Master",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/rtOK1UEM6RUOcEUC"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyValue": "={{ $json.id }}"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "f111c73b-8300-4dce-bb43-551ad36f9ec5",
+      "name": "Delete Vendor_Account_Map",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        912
+      ],
+      "parameters": {
+        "operation": "deleteRows",
+        "dataTableId": {
+          "__rl": true,
+          "value": "vV6SYHVkDmjTPvgC",
+          "mode": "list",
+          "cachedResultName": "Vendor_Account_Map",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/vV6SYHVkDmjTPvgC"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyValue": "={{ $json.id }}"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "2efb1da6-6020-4b15-a616-82028992afb4",
+      "name": "Load Config",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        -2208,
+        544
+      ],
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "o7jlGvq1uEqz6zIy",
+          "mode": "list",
+          "cachedResultName": "summers.datastore.config.keys",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/o7jlGvq1uEqz6zIy"
+        },
+        "returnAll": true
+      },
+      "executeOnce": true
+    },
+    {
+      "id": "b59995ee-2744-477f-84d4-4d2d5e73ba9f",
+      "name": "Load Department Code",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        -880,
+        544
+      ],
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "ZF2Q8mU9KnZd3RH9",
+          "mode": "list",
+          "cachedResultName": "Department_Code",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/ZF2Q8mU9KnZd3RH9"
+        },
+        "returnAll": true
+      },
+      "executeOnce": true,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "1290189a-930b-49d7-8586-cc51d701724d",
+      "name": "Load Location Master",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        -1104,
+        544
+      ],
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "rtOK1UEM6RUOcEUC",
+          "mode": "list",
+          "cachedResultName": "Location_Master",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/rtOK1UEM6RUOcEUC"
+        },
+        "returnAll": true
+      },
+      "executeOnce": true,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "e261f54f-dc3b-4e68-83c2-2a95bab5c319",
+      "name": "Load Vendor Account Map",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        -656,
+        544
+      ],
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "vV6SYHVkDmjTPvgC",
+          "mode": "list",
+          "cachedResultName": "Vendor_Account_Map",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/vV6SYHVkDmjTPvgC"
+        },
+        "returnAll": true
+      },
+      "executeOnce": true,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "fb7abddb-03b8-4225-a8f9-2bc12f172b6b",
+      "name": "Plan Sync",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -448,
+        544
+      ],
+      "parameters": {
+        "jsCode": "// Compare the Google Sheet (source of truth) with each data table and emit only the changes.\n// Columns that exist only in the data table (e.g. active, code_aliases, sage_vendor_id) are never touched.\nconst S = $('Build Config').first().json.cfg.SHEET_SYNC_CONFIG;\nconst CONFIG = {\n  DRY_RUN: S.dry_run === true,\n  DELETE_MISSING: S.delete_missing_rows === true,\n  MAX_DELETE_RATIO: Number(S.max_delete_ratio ?? 0.5),   // refuse to delete more than this share of a table in one run\n  TABLES: [\n    { key: 'location', sheet: 'Read Location Sheet', table: 'Load Location Master', keyCols: ['location_code'],\n      map: { 'Location #': ['location_number', 'number'], 'Location Name': ['location_name'], 'Ship-To Street Address': ['ship_to_street'],\n             'City': ['city'], 'State': ['state'], 'Zip': ['zip'], 'PO Suffix / Location Code': ['location_code', 'upper'],\n             'Sage Entity ID (locationid)': ['sage_entity_id'], 'ServiceTitan Tenant ID': ['st_tenant_id'] } },\n    { key: 'department', sheet: 'Read Department Sheet', table: 'Load Department Code', keyCols: ['business_unit_id'],\n      map: { 'Business Unit ID': ['business_unit_id'], 'Business Unit Name': ['business_unit_name'],\n             'Department Code': ['department_code'], 'Department Name': ['department_name'] } },\n    { key: 'vendor_map', sheet: 'Read Vendor Map Sheet', table: 'Load Vendor Account Map', keyCols: ['vendor_name', 'account_number'],\n      map: { 'Vendor Name': ['vendor_name'], 'Account Number': ['account_number'], 'Location Code': ['location_code', 'upper'],\n             'Source GL Code': ['gl_account'], 'Status': ['status'], 'Confirmed By Client?': ['confirmed_by_client', 'yesno'] } },\n  ],\n};\n\nconst str = v => (v === null || v === undefined) ? '' : String(v).trim();\nconst conv = (v, how) => {\n  const s = str(v);\n  if (how === 'number') return s === '' || isNaN(Number(s.replace(/,/g, ''))) ? null : Number(s.replace(/,/g, ''));\n  if (how === 'yesno') return /^(y|yes|true|1|x|✓|confirmed)$/i.test(s);\n  if (how === 'upper') return s ? s.toUpperCase() : null;\n  return s === '' ? null : s;\n};\nconst same = (a, b) => (typeof a === 'boolean' || typeof b === 'boolean') ? (a === true) === (b === true) : str(a) === str(b);\nconst keyOf = (row, cols) => cols.map(c => str(row[c]).toUpperCase()).join('|');\n\nconst out = [], summary = {};\nfor (const T of CONFIG.TABLES) {\n  const sheetRows = $(T.sheet).all().map(i => i.json).filter(r => r && Object.keys(r).length && !r.error);\n  const tableRows = $(T.table).all().map(i => i.json).filter(r => r && r.id !== undefined);\n  const s = summary[T.key] = { sheet_rows: 0, table_rows: tableRows.length, inserts: 0, updates: 0, deletes: 0, skipped: [], changes: [] };\n\n  // Sheet -> table columns. A header that is missing from the sheet stops this table's sync.\n  const headers = new Set(sheetRows.flatMap(r => Object.keys(r)));\n  const missingHeaders = Object.keys(T.map).filter(h => !headers.has(h));\n  if (missingHeaders.length) { s.skipped.push(`Sheet is missing columns: ${missingHeaders.join(', ')}; table not synced`); continue; }\n\n  const wanted = new Map();\n  for (const r of sheetRows) {\n    const data = {};\n    for (const [h, [col, how]] of Object.entries(T.map)) data[col] = conv(r[h], how);\n    const k = keyOf(data, T.keyCols);\n    if (!T.keyCols.every(c => str(data[c]))) continue;          // blank / note rows\n    if (wanted.has(k)) { s.skipped.push(`Duplicate key in sheet: ${k}`); continue; }\n    wanted.set(k, data);\n  }\n  s.sheet_rows = wanted.size;\n  if (!wanted.size) { s.skipped.push('Sheet returned no rows; table not synced'); continue; }\n\n  const existing = new Map();\n  for (const r of tableRows) { const k = keyOf(r, T.keyCols); if (!existing.has(k)) existing.set(k, r); }\n\n  for (const [k, data] of wanted) {\n    const cur = existing.get(k);\n    if (!cur) { s.inserts++; s.changes.push(`+ ${k}`); out.push({ json: { route: `${T.key}-upsert`, key: k, data } }); continue; }\n    const diff = Object.keys(data).filter(c => !same(data[c], cur[c]));\n    if (diff.length) {\n      s.updates++; s.changes.push(`~ ${k}: ${diff.map(c => `${c} \"${str(cur[c])}\" -> \"${str(data[c])}\"`).join(', ')}`);\n      out.push({ json: { route: `${T.key}-upsert`, key: k, data } });\n    }\n  }\n  const gone = [...existing.entries()].filter(([k]) => !wanted.has(k));\n  if (gone.length && CONFIG.DELETE_MISSING) {\n    if (gone.length > tableRows.length * CONFIG.MAX_DELETE_RATIO) {\n      s.skipped.push(`${gone.length} of ${tableRows.length} rows are missing from the sheet; deletes skipped (max_delete_ratio ${CONFIG.MAX_DELETE_RATIO})`);\n    } else for (const [k, r] of gone) { s.deletes++; s.changes.push(`- ${k}`); out.push({ json: { route: `${T.key}-delete`, key: k, id: r.id } }); }\n  } else if (gone.length) s.skipped.push(`${gone.length} table rows not in the sheet (delete_missing_rows is off): ${gone.map(([k]) => k).join(', ')}`);\n}\n\n// Always return the summary first; change items follow unless this is a dry run.\nreturn [{ json: { route: 'summary', dry_run: CONFIG.DRY_RUN, summary } }, ...(CONFIG.DRY_RUN ? [] : out)];\n"
+      }
+    },
+    {
+      "id": "2c426fb0-e5fb-4933-9f6b-4c11958a7b55",
+      "name": "Read Department Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -1536,
+        544
+      ],
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Build Config').first().json.cfg.SHEET_SYNC_CONFIG.spreadsheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Build Config').first().json.cfg.SHEET_SYNC_CONFIG.department_tab_gid }}"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "Qud2Ohm3u8o8mDCm",
+          "name": "Google Sheets | Company Mapping"
+        }
+      },
+      "executeOnce": true,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "309b366d-d458-4f64-b12c-2bedca795715",
+      "name": "Read Location Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -1760,
+        544
+      ],
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Build Config').first().json.cfg.SHEET_SYNC_CONFIG.spreadsheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Build Config').first().json.cfg.SHEET_SYNC_CONFIG.location_tab_gid }}"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "0tGGmJnU5cS1t3EG",
+          "name": "Google Sheets account 2"
+        }
+      },
+      "executeOnce": true,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "ffe17a9e-5259-4479-819d-c4a31711c320",
+      "name": "Read Vendor Map Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -1328,
+        544
+      ],
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Build Config').first().json.cfg.SHEET_SYNC_CONFIG.spreadsheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Build Config').first().json.cfg.SHEET_SYNC_CONFIG.vendor_map_tab_gid }}"
+        },
+        "options": {
+          "dataLocationOnSheet": {
+            "values": {
+              "rangeDefinition": "specifyRange",
+              "headerRow": "={{ $('Build Config').first().json.cfg.SHEET_SYNC_CONFIG.vendor_map_header_row }}",
+              "firstDataRow": "={{ $('Build Config').first().json.cfg.SHEET_SYNC_CONFIG.vendor_map_header_row + 1 }}"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "Qud2Ohm3u8o8mDCm",
+          "name": "Google Sheets | Company Mapping"
+        }
+      },
+      "executeOnce": true,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "f58de231-c6ff-4de3-a262-91638b41b16d",
+      "name": "Route Change",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        -224,
+        544
+      ],
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 7,
+        "output": "={{ [\"location-upsert\", \"location-delete\", \"department-upsert\", \"department-delete\", \"vendor_map-upsert\", \"vendor_map-delete\", \"summary\"].indexOf($json.route) }}"
+      }
+    },
+    {
+      "id": "be5b8d1e-2400-4cc5-8d15-c5741ea3c755",
+      "name": "Sync Summary",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        0,
+        1088
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "370246e2-5e1e-4fa2-ba37-7677f7857d02",
+      "name": "Upsert Department_Code",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        368
+      ],
+      "parameters": {
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "value": "ZF2Q8mU9KnZd3RH9",
+          "mode": "list",
+          "cachedResultName": "Department_Code",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/ZF2Q8mU9KnZd3RH9"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "business_unit_id",
+              "keyValue": "={{ $json.data.business_unit_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "business_unit_id": "={{ $json.data.business_unit_id }}",
+            "business_unit_name": "={{ $json.data.business_unit_name }}",
+            "department_code": "={{ $json.data.department_code }}",
+            "department_name": "={{ $json.data.department_name }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "business_unit_id",
+              "displayName": "business_unit_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "business_unit_name",
+              "displayName": "business_unit_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "department_code",
+              "displayName": "department_code",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "department_name",
+              "displayName": "department_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "2269ad62-34bd-4399-b322-8bb838ca6e88",
+      "name": "Upsert Location_Master",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "value": "rtOK1UEM6RUOcEUC",
+          "mode": "list",
+          "cachedResultName": "Location_Master",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/rtOK1UEM6RUOcEUC"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "location_code",
+              "keyValue": "={{ $json.data.location_code }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "location_number": "={{ $json.data.location_number }}",
+            "location_name": "={{ $json.data.location_name }}",
+            "ship_to_street": "={{ $json.data.ship_to_street }}",
+            "city": "={{ $json.data.city }}",
+            "state": "={{ $json.data.state }}",
+            "zip": "={{ $json.data.zip }}",
+            "location_code": "={{ $json.data.location_code }}",
+            "sage_entity_id": "={{ $json.data.sage_entity_id }}",
+            "st_tenant_id": "={{ $json.data.st_tenant_id }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "location_number",
+              "displayName": "location_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "location_name",
+              "displayName": "location_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "ship_to_street",
+              "displayName": "ship_to_street",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "city",
+              "displayName": "city",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "state",
+              "displayName": "state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "zip",
+              "displayName": "zip",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "location_code",
+              "displayName": "location_code",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "sage_entity_id",
+              "displayName": "sage_entity_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "st_tenant_id",
+              "displayName": "st_tenant_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "9f835983-7a38-471d-a80b-f67eaf2c0092",
+      "name": "Upsert Vendor_Account_Map",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        720
+      ],
+      "parameters": {
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "value": "vV6SYHVkDmjTPvgC",
+          "mode": "list",
+          "cachedResultName": "Vendor_Account_Map",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/vV6SYHVkDmjTPvgC"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "vendor_name",
+              "keyValue": "={{ $json.data.vendor_name }}"
+            },
+            {
+              "keyName": "account_number",
+              "keyValue": "={{ $json.data.account_number }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "vendor_name": "={{ $json.data.vendor_name }}",
+            "account_number": "={{ $json.data.account_number }}",
+            "location_code": "={{ $json.data.location_code }}",
+            "gl_account": "={{ $json.data.gl_account }}",
+            "status": "={{ $json.data.status }}",
+            "confirmed_by_client": "={{ $json.data.confirmed_by_client }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "vendor_name",
+              "displayName": "vendor_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "account_number",
+              "displayName": "account_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "location_code",
+              "displayName": "location_code",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "gl_account",
+              "displayName": "gl_account",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "confirmed_by_client",
+              "displayName": "confirmed_by_client",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "boolean",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Build Config": {
+      "main": [
+        [
+          {
+            "node": "Read Location Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily 2:15 AM (Tue-Sat)": {
+      "main": [
+        [
+          {
+            "node": "Load Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Config": {
+      "main": [
+        [
+          {
+            "node": "Build Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Department Code": {
+      "main": [
+        [
+          {
+            "node": "Load Vendor Account Map",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Location Master": {
+      "main": [
+        [
+          {
+            "node": "Load Department Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Vendor Account Map": {
+      "main": [
+        [
+          {
+            "node": "Plan Sync",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan Sync": {
+      "main": [
+        [
+          {
+            "node": "Route Change",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Department Sheet": {
+      "main": [
+        [
+          {
+            "node": "Read Vendor Map Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Location Sheet": {
+      "main": [
+        [
+          {
+            "node": "Read Department Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Vendor Map Sheet": {
+      "main": [
+        [
+          {
+            "node": "Load Location Master",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Change": {
+      "main": [
+        [
+          {
+            "node": "Upsert Location_Master",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Delete Location_Master",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Upsert Department_Code",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Delete Department_Code",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Upsert Vendor_Account_Map",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Delete Vendor_Account_Map",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Sync Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "tags": [
+    "AP Automation",
+    "Scheduled"
+  ]
+}
