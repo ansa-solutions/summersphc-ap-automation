@@ -1,0 +1,395 @@
+{
+  "id": "WAlFIGEZV2sQzErj",
+  "name": "ANSA | 04. Sage Post",
+  "nodes": [
+    {
+      "id": "70a9a482-6aeb-46cc-a1a9-72a7e89d17a0",
+      "name": "Build Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2480,
+        816
+      ],
+      "parameters": {
+        "jsCode": "// Settings come from the summers.datastore.config.keys data table: { CATEGORY: { key: value } }.\nconst parse = v => {\n  if (v === null || v === undefined) return null;\n  const s = String(v).trim();\n  if (/^(true|false)$/i.test(s)) return s.toLowerCase() === 'true';\n  if (/^-?\\d+(\\.\\d+)?$/.test(s)) return Number(s);\n  if (/^[\\[{]/.test(s)) { try { return JSON.parse(s); } catch (e) { /* keep as text */ } }\n  return s;\n};\nconst cfg = {};\nfor (const { json: r } of $input.all()) {\n  if (!r || !r.category || !r.key) continue;\n  (cfg[r.category] ||= {})[r.key] = parse(r.value);\n}\n// Fail loudly if a required setting is missing, rather than running with a guess.\nconst REQUIRED = [\"GLOBAL_CONFIG.doppler_secrets_url\", \"GLOBAL_CONFIG.sage_gateway_url\", \"INV_PROC_CONFIG.sage_send_termname\", \"INV_PROC_CONFIG.sage_search_page_size\"];\nconst missing = REQUIRED.filter(p => { const [c, k] = p.split('.'); const v = cfg[c]?.[k]; return v === undefined || v === null || v === ''; });\nif (missing.length) throw new Error('Missing settings in summers.datastore.config.keys: ' + missing.join(', '));\nreturn [{ json: { cfg } }];\n"
+      }
+    },
+    {
+      "id": "b54babda-5bfe-4b84-84b2-faaf4e4f2c9e",
+      "name": "Build Lookup XML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2032,
+        816
+      ],
+      "parameters": {
+        "jsCode": "const LEGAL_SUFFIXES = /\\b(incorporated|llc|l\\.l\\.c|inc|corp|corporation|co|company|ltd|limited|llp|lp|enterprises?|facilit(?:y|ies)|industries|international|the)\\b/g;\nfunction normVendor(raw) {\n  if (!raw) return '';\n  return String(raw).toLowerCase()\n    .replace(/&/g, ' and ')\n    .replace(/[.,\\/#!$%\\^*;:{}=\\-_`~()'\"]/g, ' ')\n    .replace(LEGAL_SUFFIXES, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\nconst arr = v => (v === undefined || v === null) ? [] : (Array.isArray(v) ? v : [v]);\nconst esc = v => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;').replace(/'/g, '&apos;');\n\nfunction sageCreds() {\n  const s = $('Doppler').first().json;\n  const c = {\n    sender: s.SAGE_SENDER_ID ?? s.SAGE_COMPANY_ID,\n    senderPw: s.SAGE_SENDER_PASSWORD ?? s.SAGE_COMPANY_PASSWORD,\n    company: s.SAGE_COMPANY_ID,\n    user: s.SAGE_USER_ID ?? s.USER_ID,\n    userPw: s.SAGE_USER_PASSWORD ?? s.USER_PASSWORD,\n  };\n  const missing = Object.entries(c).filter(([, v]) => !v).map(([k]) => k);\n  if (missing.length) throw new Error(`Doppler is missing Sage secrets: ${missing.join(', ')}`);\n  return c;\n}\n\n// Login auth on every request (no session step). locationId scopes the request to the entity.\nfunction sageEnvelope(locationId, functionsXml) {\n  const c = sageCreds();\n  return `<?xml version=\"1.0\" encoding=\"UTF-8\"?>` +\n    `<request><control><senderid>${esc(c.sender)}</senderid><password>${esc(c.senderPw)}</password>` +\n    `<controlid>${Date.now()}</controlid><uniqueid>false</uniqueid><dtdversion>3.0</dtdversion><includewhitespace>false</includewhitespace></control>` +\n    `<operation><authentication><login><userid>${esc(c.user)}</userid><companyid>${esc(c.company)}</companyid><password>${esc(c.userPw)}</password>` +\n    (locationId ? `<locationid>${esc(locationId)}</locationid>` : '') +\n    `</login></authentication><content>${functionsXml}</content></operation></request>`;\n}\n\n// Collect every <errormessage> in a parsed Sage response.\nfunction sageErrors(o, acc = []) {\n  if (!o || typeof o !== 'object') return acc;\n  for (const [k, v] of Object.entries(o)) {\n    if (k === 'errormessage') {\n      for (const e of arr(v?.error)) {\n        acc.push([e.errorno, e.description, e.description2, e.correction].filter(x => typeof x === 'string' && x.trim()).join(' — '));\n      }\n    } else if (v && typeof v === 'object') {\n      sageErrors(v, acc);\n    }\n  }\n  return acc;\n}\n\n// Sage returns HTTP 200 even on failure, so the status has to be read from the body.\nfunction sageResults(j) {\n  const resp = j?.response;\n  if (!resp) {\n    const e = j?.error;\n    return { error: 'No parseable response from Sage' + (e ? `: ${typeof e === 'string' ? e : (e.message || JSON.stringify(e))}` : '') };\n  }\n  if (resp.control?.status !== 'success') return { error: 'Sage control block failed: ' + (sageErrors(resp).join(' | ') || 'no detail') };\n  if (resp.operation?.authentication?.status !== 'success') return { error: 'Sage login failed: ' + (sageErrors(resp).join(' | ') || 'no detail') };\n  return { list: arr(resp.operation?.result) };\n}\n\n// One request: vendor lookup + item GL lookup (only for lines without a GL).\nconst PAGE = $('Build Config').first().json.cfg.INV_PROC_CONFIG.sage_search_page_size;\nconst ctx = JSON.parse(JSON.stringify($('Start').first().json));\nconst p = ctx.payload;\nif (!p) throw new Error('Sage Post called without a payload');\n\nconst fns = [];\nif (p.vendor.sage_vendor_id) {\n  fns.push(`<function controlid=\"vendorLookup\"><query><object>VENDOR</object><select><field>VENDORID</field><field>NAME</field><field>STATUS</field></select>` +\n    `<filter><equalto><field>VENDORID</field><value>${esc(p.vendor.sage_vendor_id)}</value></equalto></filter><pagesize>${PAGE}</pagesize></query></function>`);\n} else {\n  const words = normVendor(p.vendor.name).split(' ').filter(w => w.length > 1 && w !== 'and');\n  const term = words.slice(0, 2).join(' ') || p.vendor.name;\n  fns.push(`<function controlid=\"vendorLookup\"><query><object>VENDOR</object><select><field>VENDORID</field><field>NAME</field><field>STATUS</field></select>` +\n    `<filter><like><field>NAME</field><value>%${esc(term)}%</value></like></filter><options><caseinsensitive>true</caseinsensitive></options><pagesize>${PAGE}</pagesize></query></function>`);\n}\nconst names = [...new Set(p.lines.filter(l => !l.gl_account).flatMap(l => l.item_names || []))];\nif (names.length) {\n  fns.push(`<function controlid=\"itemLookup\"><query><object>ITEM</object><select><field>ITEMID</field><field>NAME</field><field>GLGROUP</field></select>` +\n    `<filter><in><field>NAME</field>${names.map(n => `<value>${esc(n)}</value>`).join('')}</in></filter><pagesize>${PAGE}</pagesize></query></function>`);\n}\nctx.sage_xml = sageEnvelope(p.location_id, fns.join(''));\nreturn [{ json: ctx }];\n"
+      }
+    },
+    {
+      "id": "b6a4c009-fcb7-41d4-9414-400a414af7c5",
+      "name": "Check Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -480,
+        688
+      ],
+      "parameters": {
+        "jsCode": "const arr = v => (v === undefined || v === null) ? [] : (Array.isArray(v) ? v : [v]);\nconst esc = v => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;').replace(/'/g, '&apos;');\n\nfunction sageCreds() {\n  const s = $('Doppler').first().json;\n  const c = {\n    sender: s.SAGE_SENDER_ID ?? s.SAGE_COMPANY_ID,\n    senderPw: s.SAGE_SENDER_PASSWORD ?? s.SAGE_COMPANY_PASSWORD,\n    company: s.SAGE_COMPANY_ID,\n    user: s.SAGE_USER_ID ?? s.USER_ID,\n    userPw: s.SAGE_USER_PASSWORD ?? s.USER_PASSWORD,\n  };\n  const missing = Object.entries(c).filter(([, v]) => !v).map(([k]) => k);\n  if (missing.length) throw new Error(`Doppler is missing Sage secrets: ${missing.join(', ')}`);\n  return c;\n}\n\n// Login auth on every request (no session step). locationId scopes the request to the entity.\nfunction sageEnvelope(locationId, functionsXml) {\n  const c = sageCreds();\n  return `<?xml version=\"1.0\" encoding=\"UTF-8\"?>` +\n    `<request><control><senderid>${esc(c.sender)}</senderid><password>${esc(c.senderPw)}</password>` +\n    `<controlid>${Date.now()}</controlid><uniqueid>false</uniqueid><dtdversion>3.0</dtdversion><includewhitespace>false</includewhitespace></control>` +\n    `<operation><authentication><login><userid>${esc(c.user)}</userid><companyid>${esc(c.company)}</companyid><password>${esc(c.userPw)}</password>` +\n    (locationId ? `<locationid>${esc(locationId)}</locationid>` : '') +\n    `</login></authentication><content>${functionsXml}</content></operation></request>`;\n}\n\n// Collect every <errormessage> in a parsed Sage response.\nfunction sageErrors(o, acc = []) {\n  if (!o || typeof o !== 'object') return acc;\n  for (const [k, v] of Object.entries(o)) {\n    if (k === 'errormessage') {\n      for (const e of arr(v?.error)) {\n        acc.push([e.errorno, e.description, e.description2, e.correction].filter(x => typeof x === 'string' && x.trim()).join(' — '));\n      }\n    } else if (v && typeof v === 'object') {\n      sageErrors(v, acc);\n    }\n  }\n  return acc;\n}\n\n// Sage returns HTTP 200 even on failure, so the status has to be read from the body.\nfunction sageResults(j) {\n  const resp = j?.response;\n  if (!resp) {\n    const e = j?.error;\n    return { error: 'No parseable response from Sage' + (e ? `: ${typeof e === 'string' ? e : (e.message || JSON.stringify(e))}` : '') };\n  }\n  if (resp.control?.status !== 'success') return { error: 'Sage control block failed: ' + (sageErrors(resp).join(' | ') || 'no detail') };\n  if (resp.operation?.authentication?.status !== 'success') return { error: 'Sage login failed: ' + (sageErrors(resp).join(' | ') || 'no detail') };\n  return { list: arr(resp.operation?.result) };\n}\n\nconst ctx = JSON.parse(JSON.stringify($('Resolve Vendor & GL').first().json));\ndelete ctx.sage_xml;\ndelete ctx.sage_ready;\nfunction findKey(o, k) {\n  if (!o || typeof o !== 'object') return null;\n  if (o[k] !== undefined) return o[k];\n  for (const v of Object.values(o)) { const r = findKey(v, k); if (r !== null) return r; }\n  return null;\n}\nconst res = sageResults($input.first()?.json);\nif (res.error) {\n  ctx.status = 'POST_FAILED'; ctx.reason = res.error;\n} else {\n  const cr = res.list.find(x => x.controlid === 'createBill');\n  if (cr?.status === 'success') {\n    ctx.status = 'POSTED';\n    ctx.sage_bill_id = String(findKey(cr.data, 'RECORDNO') ?? '') || null;\n    ctx.posted_at = new Date().toISOString();\n    ctx.reason = null;\n  } else {\n    ctx.status = 'POST_FAILED';\n    ctx.reason = 'Sage rejected the bill: ' + (sageErrors(cr).join(' | ') || 'no error detail returned');\n  }\n}\nreturn [{ json: ctx }];\n"
+      }
+    },
+    {
+      "id": "04b0ac48-7ec0-4ae0-9d91-f20a9bd15793",
+      "name": "Doppler",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -2256,
+        816
+      ],
+      "parameters": {
+        "url": "={{ $('Build Config').first().json.cfg.GLOBAL_CONFIG.doppler_secrets_url }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpBearerAuth",
+        "options": {}
+      },
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "WpMLhePuqEaC0POZ",
+          "name": "Doppler Auth 2"
+        }
+      },
+      "retryOnFail": true
+    },
+    {
+      "id": "5a651deb-96c3-4c61-86d7-98ba7e7cbf09",
+      "name": "Load Config",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        -2704,
+        816
+      ],
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "o7jlGvq1uEqz6zIy",
+          "mode": "list",
+          "cachedResultName": "summers.datastore.config.keys",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/o7jlGvq1uEqz6zIy"
+        },
+        "returnAll": true
+      },
+      "executeOnce": true
+    },
+    {
+      "id": "85514c99-3174-4d52-93f3-c13289293579",
+      "name": "Parse Create",
+      "type": "n8n-nodes-base.xml",
+      "typeVersion": 1,
+      "position": [
+        -704,
+        688
+      ],
+      "parameters": {
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "2ac51ea9-ea26-40f8-95e3-3e3bd36fa96e",
+      "name": "Parse Lookup",
+      "type": "n8n-nodes-base.xml",
+      "typeVersion": 1,
+      "position": [
+        -1584,
+        816
+      ],
+      "parameters": {
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "0d66905c-bb3c-49c0-a523-1e7f8a503045",
+      "name": "Ready to Create?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1152,
+        816
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "5d5c3cea-0323-4093-902c-11af59b353b9",
+              "leftValue": "={{ $json.sage_ready === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "76b27de6-f23c-497c-b5e1-5ecfe0d9a9fb",
+      "name": "Resolve Vendor & GL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1376,
+        816
+      ],
+      "parameters": {
+        "jsCode": "const LEGAL_SUFFIXES = /\\b(incorporated|llc|l\\.l\\.c|inc|corp|corporation|co|company|ltd|limited|llp|lp|enterprises?|facilit(?:y|ies)|industries|international|the)\\b/g;\nfunction normVendor(raw) {\n  if (!raw) return '';\n  return String(raw).toLowerCase()\n    .replace(/&/g, ' and ')\n    .replace(/[.,\\/#!$%\\^*;:{}=\\-_`~()'\"]/g, ' ')\n    .replace(LEGAL_SUFFIXES, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\nconst arr = v => (v === undefined || v === null) ? [] : (Array.isArray(v) ? v : [v]);\nconst esc = v => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;').replace(/'/g, '&apos;');\n\nfunction sageCreds() {\n  const s = $('Doppler').first().json;\n  const c = {\n    sender: s.SAGE_SENDER_ID ?? s.SAGE_COMPANY_ID,\n    senderPw: s.SAGE_SENDER_PASSWORD ?? s.SAGE_COMPANY_PASSWORD,\n    company: s.SAGE_COMPANY_ID,\n    user: s.SAGE_USER_ID ?? s.USER_ID,\n    userPw: s.SAGE_USER_PASSWORD ?? s.USER_PASSWORD,\n  };\n  const missing = Object.entries(c).filter(([, v]) => !v).map(([k]) => k);\n  if (missing.length) throw new Error(`Doppler is missing Sage secrets: ${missing.join(', ')}`);\n  return c;\n}\n\n// Login auth on every request (no session step). locationId scopes the request to the entity.\nfunction sageEnvelope(locationId, functionsXml) {\n  const c = sageCreds();\n  return `<?xml version=\"1.0\" encoding=\"UTF-8\"?>` +\n    `<request><control><senderid>${esc(c.sender)}</senderid><password>${esc(c.senderPw)}</password>` +\n    `<controlid>${Date.now()}</controlid><uniqueid>false</uniqueid><dtdversion>3.0</dtdversion><includewhitespace>false</includewhitespace></control>` +\n    `<operation><authentication><login><userid>${esc(c.user)}</userid><companyid>${esc(c.company)}</companyid><password>${esc(c.userPw)}</password>` +\n    (locationId ? `<locationid>${esc(locationId)}</locationid>` : '') +\n    `</login></authentication><content>${functionsXml}</content></operation></request>`;\n}\n\n// Collect every <errormessage> in a parsed Sage response.\nfunction sageErrors(o, acc = []) {\n  if (!o || typeof o !== 'object') return acc;\n  for (const [k, v] of Object.entries(o)) {\n    if (k === 'errormessage') {\n      for (const e of arr(v?.error)) {\n        acc.push([e.errorno, e.description, e.description2, e.correction].filter(x => typeof x === 'string' && x.trim()).join(' — '));\n      }\n    } else if (v && typeof v === 'object') {\n      sageErrors(v, acc);\n    }\n  }\n  return acc;\n}\n\n// Sage returns HTTP 200 even on failure, so the status has to be read from the body.\nfunction sageResults(j) {\n  const resp = j?.response;\n  if (!resp) {\n    const e = j?.error;\n    return { error: 'No parseable response from Sage' + (e ? `: ${typeof e === 'string' ? e : (e.message || JSON.stringify(e))}` : '') };\n  }\n  if (resp.control?.status !== 'success') return { error: 'Sage control block failed: ' + (sageErrors(resp).join(' | ') || 'no detail') };\n  if (resp.operation?.authentication?.status !== 'success') return { error: 'Sage login failed: ' + (sageErrors(resp).join(' | ') || 'no detail') };\n  return { list: arr(resp.operation?.result) };\n}\n\n// Pick exactly one Sage vendor, fill item GLs, then build the APBILL create request.\nconst CONFIG = { SEND_TERMNAME: $('Build Config').first().json.cfg.INV_PROC_CONFIG.sage_send_termname === true };   // true only once invoice terms are mapped to Sage term names\nconst ctx = JSON.parse(JSON.stringify($('Build Lookup XML').first().json));\ndelete ctx.sage_xml;\nctx.sage_ready = false;\nconst p = ctx.payload;\nconst fail = (status, reason) => { ctx.status = status; ctx.reason = reason; return [{ json: ctx }]; };\n\nconst res = sageResults($input.first()?.json);\nif (res.error) return fail('POST_FAILED', res.error);\n\n// Vendor\nconst vr = res.list.find(x => x.controlid === 'vendorLookup');\nif (!vr || vr.status !== 'success') return fail('POST_FAILED', 'Sage vendor lookup failed: ' + (sageErrors(vr).join(' | ') || 'no detail'));\nconst vendors = arr(vr.data?.VENDOR ?? vr.data?.vendor).filter(v => !v.STATUS || /^(active|t)$/i.test(String(v.STATUS)));\nconst target = normVendor(p.vendor.name);\nlet picks = vendors;\nif (!p.vendor.sage_vendor_id) {\n  picks = vendors.filter(v => normVendor(v.NAME) === target);\n  if (!picks.length) picks = vendors.filter(v => { const n = normVendor(v.NAME); return n && target && (n.includes(target) || target.includes(n)); });\n}\nif (picks.length > 1 && p.vendor.location_code) {\n  const local = picks.filter(v => String(v.VENDORID).toUpperCase().startsWith(p.vendor.location_code + '-'));\n  if (local.length) picks = local;\n}\nif (!picks.length) return fail('VENDOR_NOT_FOUND', `No active Sage vendor matches \"${p.vendor.name}\"` + (p.vendor.sage_vendor_id ? ` (ID ${p.vendor.sage_vendor_id})` : ''));\nif (picks.length > 1) return fail('VENDOR_AMBIGUOUS', `${picks.length} Sage vendors match \"${p.vendor.name}\": ` + picks.slice(0, 10).map(v => `${v.VENDORID} ${v.NAME}`).join('; '));\nconst vendorId = picks[0].VENDORID;\nctx.sage_vendor = { id: vendorId, name: picks[0].NAME };\n\n// GL from item GL group (e.g. \"5000 - Materials\" -> 5000)\nconst glByName = {};\nconst ir = res.list.find(x => x.controlid === 'itemLookup');\nfor (const it of arr(ir?.data?.ITEM ?? ir?.data?.item)) {\n  const g = String(it.GLGROUP ?? '').trim();\n  const acct = (g.match(/^\\s*([\\w.]+)/) || [])[1];\n  if (it.NAME && acct) glByName[String(it.NAME).trim().toUpperCase()] = { account: acct, group: g };\n}\nfor (const line of p.lines) {\n  if (line.gl_account) continue;\n  const found = (line.item_names || []).map(n => glByName[String(n).trim().toUpperCase()]).filter(Boolean);\n  if (!found.length) return fail('GL_NOT_FOUND', `No Sage item GL group for: ${(line.item_names || []).join(', ') || '(no PO items)'}`);\n  line.gl_account = found[0].account;\n  line.gl_name = found[0].group;\n  const distinct = [...new Set(found.map(f => f.account))];\n  if (distinct.length > 1) ctx.warnings.push(`PO items map to several GL accounts (${distinct.join(', ')}); posted to ${line.gl_account}`);\n}\n\n// APBILL\nconst mdy = iso => { const [y, m, d] = String(iso).split('-'); return `${m}/${d}/${y}`; };\nconst b = p.bill;\nlet x = `<APBILL><VENDORID>${esc(vendorId)}</VENDORID><WHENCREATED>${mdy(b.when_created)}</WHENCREATED>`;\nif (b.when_due) x += `<WHENDUE>${mdy(b.when_due)}</WHENDUE>`;\nelse if (CONFIG.SEND_TERMNAME && b.term) x += `<TERMNAME>${esc(b.term)}</TERMNAME>`;\nx += `<RECORDID>${esc(b.record_id)}</RECORDID>`;\nif (b.doc_number) x += `<DOCNUMBER>${esc(b.doc_number)}</DOCNUMBER>`;\nx += `<DESCRIPTION>${esc(String(b.description ?? '').slice(0, 1000))}</DESCRIPTION><APBILLITEMS>`;\nfor (const l of p.lines) {\n  x += `<APBILLITEM><ACCOUNTNO>${esc(l.gl_account)}</ACCOUNTNO><TRX_AMOUNT>${Number(l.amount).toFixed(2)}</TRX_AMOUNT><ENTRYDESCRIPTION>${esc(l.memo)}</ENTRYDESCRIPTION>`;\n  if (p.line_location_id) x += `<LOCATIONID>${esc(p.line_location_id)}</LOCATIONID>`;\n  if (l.department) x += `<DEPARTMENTID>${esc(l.department)}</DEPARTMENTID>`;\n  x += `</APBILLITEM>`;\n}\nx += `</APBILLITEMS></APBILL>`;\n\nctx.sage_xml = sageEnvelope(p.location_id, `<function controlid=\"createBill\"><create>${x}</create></function>`);\nctx.sage_ready = true;\nreturn [{ json: ctx }];\n"
+      }
+    },
+    {
+      "id": "d3a9772e-9974-47e7-83e9-0a94a3b5b244",
+      "name": "Return",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -256,
+        816
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "5bb0c2a2-516e-4427-9104-ae8bfb6598cb",
+      "name": "Sage Create Bill",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -928,
+        688
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Build Config').first().json.cfg.GLOBAL_CONFIG.sage_gateway_url }}",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "xmlrequest",
+              "value": "={{ $json.sage_xml }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "bdd5dd57-1b4e-4eb0-9dd6-8303962309fa",
+      "name": "Sage Lookup",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1808,
+        816
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Build Config').first().json.cfg.GLOBAL_CONFIG.sage_gateway_url }}",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "xmlrequest",
+              "value": "={{ $json.sage_xml }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "c80692ab-97dc-43f7-a0a0-fef496790a1a",
+      "name": "Start",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -2912,
+        816
+      ],
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    }
+  ],
+  "connections": {
+    "Build Config": {
+      "main": [
+        [
+          {
+            "node": "Doppler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Lookup XML": {
+      "main": [
+        [
+          {
+            "node": "Sage Lookup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Result": {
+      "main": [
+        [
+          {
+            "node": "Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Doppler": {
+      "main": [
+        [
+          {
+            "node": "Build Lookup XML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Config": {
+      "main": [
+        [
+          {
+            "node": "Build Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Create": {
+      "main": [
+        [
+          {
+            "node": "Check Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Lookup": {
+      "main": [
+        [
+          {
+            "node": "Resolve Vendor & GL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ready to Create?": {
+      "main": [
+        [
+          {
+            "node": "Sage Create Bill",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Vendor & GL": {
+      "main": [
+        [
+          {
+            "node": "Ready to Create?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sage Create Bill": {
+      "main": [
+        [
+          {
+            "node": "Parse Create",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sage Lookup": {
+      "main": [
+        [
+          {
+            "node": "Parse Lookup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start": {
+      "main": [
+        [
+          {
+            "node": "Load Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "tags": [
+    "AP Automation",
+    "Sub-flow"
+  ]
+}
