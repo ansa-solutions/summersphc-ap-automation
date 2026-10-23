@@ -1,0 +1,2572 @@
+{
+  "id": "2tiO18xZg44ZFT1j",
+  "name": "ANSA | 01. AP Orchestrator",
+  "nodes": [
+    {
+      "id": "f4140e95-78bc-49c1-aded-89c257c59367",
+      "name": "Apply Fallback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8000,
+        9952
+      ],
+      "parameters": {
+        "jsCode": "// Use the LLM's branch pick only if it is one of the known codes; always flag it for review.\nconst ctx = JSON.parse(JSON.stringify($('Resolve Location').first().json));\nconst answer = String($json?.choices?.[0]?.message?.content ?? '').trim().toUpperCase().replace(/[^A-Z]/g, '');\nconst opt = ctx.location.options?.[answer];\nif (opt) {\n  Object.assign(ctx.location, { status: 'RESOLVED', code: answer, ...opt, method: 'LLM_FALLBACK', method_detail: `AI fallback (no PO code or Ship To match) = ${answer}; verify`, needs_review: true });\n  ctx.warnings.push(`Location ${answer} chosen by LLM fallback; verify`);\n} else {\n  ctx.location.method = `LLM_FALLBACK answered ${answer || 'nothing'}`;\n}\ndelete ctx.location.options;\ndelete ctx.location.fallback_prompt;\nreturn [{ json: ctx }];\n"
+      }
+    },
+    {
+      "id": "85c9f3f9-80a0-4fbf-955b-de2d0e0cc49b",
+      "name": "Build Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4000,
+        10096
+      ],
+      "parameters": {
+        "jsCode": "// Settings come from the summers.datastore.config.keys data table: { CATEGORY: { key: value } }.\nconst parse = v => {\n  if (v === null || v === undefined) return null;\n  const s = String(v).trim();\n  if (/^(true|false)$/i.test(s)) return s.toLowerCase() === 'true';\n  if (/^-?\\d+(\\.\\d+)?$/.test(s)) return Number(s);\n  if (/^[\\[{]/.test(s)) { try { return JSON.parse(s); } catch (e) { /* keep as text */ } }\n  return s;\n};\nconst cfg = {};\nfor (const { json: r } of $input.all()) {\n  if (!r || !r.category || !r.key) continue;\n  (cfg[r.category] ||= {})[r.key] = parse(r.value);\n}\n// Fail loudly if a required setting is missing, rather than running with a guess.\nconst REQUIRED = [\"GLOBAL_CONFIG.extraction_endpoint\", \"GLOBAL_CONFIG.glm_extraction_model\", \"GLOBAL_CONFIG.glm_fallback_model\", \"GLOBAL_CONFIG.glm_header_max_tokens\", \"GLOBAL_CONFIG.glm_lines_max_tokens\", \"GLOBAL_CONFIG.glm_fallback_max_tokens\", \"INV_PROC_CONFIG.validation_tolerance\", \"INV_PROC_CONFIG.email_body_min_chars\", \"LOCATION_CONFIG.conflict_policy\", \"LOCATION_CONFIG.enable_llm_fallback\", \"ROUTING_CONFIG.advertising_patterns\", \"ROUTING_CONFIG.utility_patterns\"];\nconst missing = REQUIRED.filter(p => { const [c, k] = p.split('.'); const v = cfg[c]?.[k]; return v === undefined || v === null || v === ''; });\nif (missing.length) throw new Error('Missing settings in summers.datastore.config.keys: ' + missing.join(', '));\nreturn [{ json: { cfg } }];\n"
+      }
+    },
+    {
+      "id": "2aa574fb-7166-4a4b-a2ee-bd343c8bc41d",
+      "name": "Build Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7088,
+        10128
+      ],
+      "parameters": {
+        "jsCode": "\nconst ctx = JSON.parse(\n  JSON.stringify($('Loop Invoices').item.json)\n);\n\nctx.warnings = Array.isArray(ctx.warnings)\n  ? ctx.warnings\n  : [];\n\nconst row = $('Insert Tracking Row').item.json;\nctx.tracking_id = row?.id ?? null;\n\n// Duplicate-check results entering this node.\nconst posted = $input.all()\n  .map(item => item.json)\n  .filter(r =>\n    r?.id != null &&\n    String(r.id) !== String(ctx.tracking_id)\n  );\n\nif (\n  !ctx.route &&\n  ctx.invoice?.invoice_number &&\n  posted.length > 0\n) {\n  ctx.route = 'EXCEPTION';\n  ctx.status = 'DUPLICATE';\n  ctx.reason =\n    `Already posted (tracking row ${posted[0].id}, Sage bill ${posted[0].sage_bill_id || 'n/a'})`;\n}\n\nreturn { json: ctx };\n"
+      }
+    },
+    {
+      "id": "da3fa3c1-f20d-4798-ba09-24974a92187f",
+      "name": "Check Posted Duplicate",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        6864,
+        10128
+      ],
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "YQpLj9gtvsYErCBh",
+          "mode": "list",
+          "cachedResultName": "New Business Processing Datatable",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/YQpLj9gtvsYErCBh"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "vendor_name",
+              "keyValue": "={{ $('Loop Invoices').first().json.vendor?.name || '__none__' }}"
+            },
+            {
+              "keyName": "invoice_number",
+              "keyValue": "={{ $('Loop Invoices').first().json.invoice?.invoice_number || '__none__' }}"
+            },
+            {
+              "keyName": "processing_status",
+              "keyValue": "POSTED"
+            }
+          ]
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "345dde02-9c2d-4e2c-956a-870e97fb7ac1",
+      "name": "Classify Lane",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8256,
+        10096
+      ],
+      "parameters": {
+        "jsCode": "// Lane rules (deterministic): credit memo -> exception; PO -> Direct; everything else -> Indirect.\nconst R = $('Build Config').first().json.cfg.ROUTING_CONFIG;\nconst toRe = list => (Array.isArray(list) ? list : []).map(p => new RegExp(p, 'i'));\nconst CONFIG = { ADVERTISING: toRe(R.advertising_patterns), UTILITY: toRe(R.utility_patterns) };\nconst ctx = $json;\nif (ctx.location) { delete ctx.location.options; delete ctx.location.fallback_prompt; }\nif (ctx.route) return [{ json: ctx }];\n\nconst exc = (status, reason) => { ctx.route = 'EXCEPTION'; ctx.status = status; ctx.reason = reason; return [{ json: ctx }]; };\nconst loc = ctx.location || {};\nconst inv = ctx.invoice;\n\nconst total = inv.current_charges ?? inv.invoice_total ?? 0;\n// The printed title only counts when the document holds a single record; in a multi-document PDF it describes just one of them.\nconst titleIsCredit = ctx.invoice_count === 1 && /\\bcredit\\s+(memo|note)\\b/i.test(ctx.document_title || '');\nif (titleIsCredit || ctx.document_type === 'CREDIT_MEMO' || (inv.invoice_total ?? 0) < 0 || total < 0) {\n  ctx.lane = 'CREDIT_MEMO';\n  return exc('CREDIT_MEMO_REVIEW', 'Credit memos are not auto-posted yet');\n}\n\nif (loc.status === 'CONFLICT') return exc('LOCATION_CONFLICT', `Location sources disagree: ${loc.method}`);\n// A resolved location must exist and be live (both lanes).\nif (loc.status === 'RESOLVED') {\n  if (!loc.entity_id) return exc('LOCATION_NOT_IN_MASTER', `Location ${loc.code} has no Sage entity in Location_Master`);\n  if (loc.active !== true) return exc('LOCATION_NOT_ACTIVE', `Location ${loc.code} (${loc.entity_id}) is not active yet in Location_Master`);\n}\n\n// PO invoices: Direct lane (location required)\nif (ctx.po?.valid) {\n  ctx.lane = 'DIRECT';\n  if (loc.status !== 'RESOLVED') return exc('LOCATION_UNKNOWN', 'No location from PO suffix, ship-to or service address' + (loc.method ? ` (${loc.method})` : ''));\n  if (!loc.st_tenant_id) return exc('LOCATION_NO_ST_TENANT', `Location ${loc.code} has no ServiceTitan tenant in Location_Master`);\n  ctx.route = 'DIRECT';\n  return [{ json: ctx }];\n}\n\n// Everything else is an indirect expense; Vendor_Account_Map decides GL, vendor and (if the document didn't) location.\nconst text = [ctx.vendor?.name, inv.charge_summary, ...(inv.line_items || []).map(l => l.description)].filter(Boolean).join(' ').toLowerCase();\nconst hit = list => { const r = list.find(re => re.test(text)); return r ? String(r) : null; };\nconst adv = hit(CONFIG.ADVERTISING), util = hit(CONFIG.UTILITY);\nctx.lane = adv ? 'INDIRECT_ADVERTISING' : (util ? 'INDIRECT_UTILITY' : 'INDIRECT_OTHER');\nctx.lane_evidence = adv || util || (inv.account_number ? `account ${inv.account_number}` : 'no PO');\nctx.route = 'INDIRECT';\nreturn [{ json: ctx }];\n"
+      }
+    },
+    {
+      "id": "35c13198-a02b-4e08-a4fd-9519d839cea6",
+      "name": "Done",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        6656,
+        9888
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "3006fb47-6a7a-4e92-ae60-7cae198efadf",
+      "name": "Extract from File",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        4672,
+        10096
+      ],
+      "parameters": {
+        "operation": "pdf",
+        "options": {}
+      },
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "d6224479-6e7c-41ac-b9e2-3b55cd71c54d",
+      "name": "Extract Header (GLM)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5136,
+        10096
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Build Config').first().json.cfg.GLOBAL_CONFIG.extraction_endpoint }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "={{ $('Build Config').first().json.cfg.GLOBAL_CONFIG.glm_extraction_model }}"
+            },
+            {
+              "name": "max_tokens",
+              "value": "={{ $('Build Config').first().json.cfg.GLOBAL_CONFIG.glm_header_max_tokens }}"
+            },
+            {
+              "name": "temperature",
+              "value": "={{ 0 }}"
+            },
+            {
+              "name": "response_format",
+              "value": "={{ {\"type\": \"json_object\"} }}"
+            },
+            {
+              "name": "messages",
+              "value": "={{ [\n  {\n    role: 'system',\n    content: `Return ONLY valid JSON. No markdown, no code fences, no commentary.\n\nYou are an accounts-payable document reader. First validate the document type before extracting any billing information. Transcribe values exactly as printed. Do not guess, calculate, derive codes, or invent missing values. If a value is not printed, use null.\n\nMONEY RULE (applies to every amount in every section, including statements and every transaction):\nMoney: Return every monetary amount as a JSON string, never a bare JSON number. Use digits and one decimal point only, with no currency symbols or commas. A negative amount starts with a minus sign, for example \"-234.89\". Copy the amount exactly as printed. Never round, calculate, or repeat digits.\n\nSTAGE 0: DOCUMENT VALIDATION\n\nBefore extracting fields, determine whether the document is a valid billing document.\n\nThe document_type must be exactly one of:\n- INVOICE\n- CREDIT_MEMO\n- STATEMENT\n- MIXED\n- NOT_A_VALID_PDF\n\nDOCUMENT TYPE RULES\n\nINVOICE:\nA genuine supplier bill requesting payment for goods or services. This includes utility bills and recurring service bills with current-period charges, even if previous balances or payments are also shown.\n\nCREDIT_MEMO:\nA genuine supplier-issued credit memo, credit note, or credit document that adjusts or reverses charges.\n\nSTATEMENT:\nAn account statement summarizing outstanding balances, past invoices, payments, credits, or transactions owed to a supplier. If a statement is followed by copies of invoices it lists, classify the overall document as STATEMENT and do not extract those invoice copies separately.\n\nMIXED:\nA document containing more than one genuine INVOICE or CREDIT_MEMO and no statement as the primary document.\n\nNOT_A_VALID_PDF:\nUse this value when the document is not a valid billing document or does not contain sufficient recognizable billing-document content to process.\n\nExamples include:\n- Purchase orders\n- Quotes and estimates\n- Sales orders\n- Delivery receipts and packing slips\n- Proofs of delivery\n- Product catalogs\n- Advertisements and marketing materials\n- Contracts and general correspondence\n- Reports and unrelated documents\n- Blank PDFs\n- Corrupted or unreadable document content\n- Documents with no recognizable billing information\n\nVALIDATION RULES\n\nA PDF filename or .pdf extension does not prove that the document is a valid billing document.\nA vendor name, customer name, PO number, date, amount, or payment terms alone does not prove that a document is an invoice.\nA purchase order is NOT_A_VALID_PDF for this billing workflow, even if it contains prices, totals, vendor details, and a PO number.\nA quote or estimate is NOT_A_VALID_PDF even if it shows payment terms or an estimated total.\nA delivery receipt or packing slip is NOT_A_VALID_PDF even if it references an invoice or PO number.\nA genuine supplier invoice remains INVOICE if it also shows previous balances, payments, or credits, provided it contains current-period charges.\nDo not classify a genuine billing document as NOT_A_VALID_PDF merely because an optional field is missing.\nIf a valid billing document has some unreadable fields, extract the readable values and record important unreadable fields in exceptions.\nIf the document is clearly not a billing document, do not extract billing information.\nIf the document is blank, corrupted, or has no usable document text, return NOT_A_VALID_PDF.\nNever invent invoice details to force a document into a billing category.\nNON-BILLING DOCUMENT RESPONSE\n\nIf document_type is NOT_A_VALID_PDF, immediately return the required JSON structure with:\n- document_type set to NOT_A_VALID_PDF\n- document_title set to the printed title if readable, otherwise null\n- vendor fields set to null\n- customer fields set to null\n- ship_to fields set to null\n- invoices set to an empty array\n- statement set to null\n- exceptions set to an empty array\n\nDo not extract invoice numbers, PO numbers, amounts, addresses, payment terms, or other billing fields from non-billing documents.\n\nSTAGE 1: HEADER AND TOTALS ONLY\n\nOnly for valid billing documents, read the document header and totals. Do NOT list line items.\n\nThe document may be a PDF or the body of an email, such as a utility bill notice. Read both in the same way.\n\ndocument_title:\nCopy the document's printed title verbatim, such as INVOICE, CREDIT MEMO, STATEMENT, PURCHASE ORDER, or QUOTE.\n\nPARTIES\n\nvendor: The company issuing the document.\ncustomer: The bill-to or sold-to party. customer.account is the customer or account number assigned by the vendor, if printed.\nship_to: The block under Ship To, Deliver To, or Job Site, including name, street, city, state, ZIP code, and full address.\nIn two-column PDFs, Bill To and Ship To information may be interleaved or out of order. Keep these addresses separate. The bill-to address is often the customer's head office.\nIf you cannot determine which address lines belong to Ship To, provide your best reading and add ship_to_uncertain to exceptions.\nINVOICES\n\nCreate one object per invoice number.\nIf one invoice lists several PO numbers, create one object per PO.\nEach invoice object's document_type must be INVOICE or CREDIT_MEMO.\nA negative total or an explicitly identified supplier credit memo must be classified as CREDIT_MEMO.\npo_number: Copy the value in the field labeled PO, P.O., PO Number, Purchase Order, Cust PO, or Customer PO Number exactly as printed, preserving hyphens, spaces, letters, and suffixes. Example: 270072103-001FWD20.\nA PO value may be a name or words, such as JOHN MOODY. Copy it if it appears in the correct PO field.\nNever take the PO number from a different field such as Job Name, Customer Number, Salesperson, or Order Number.\nUse null for po_number only if the PO field is absent or empty.\naccount_number: The account or customer number for this bill, verbatim.\nservice_address: The service or premise address for utilities, verbatim.\npayment_terms: Copy the printed payment terms verbatim, for example NET 10TH PROX. Never derive payment terms from the due date.\ncharge_summary: At most 8 words describing what is billed, using the document's own words, such as electric service, HVAC parts, or Google Ads.\ncurrent_charges: On utility and recurring bills, copy the printed charges for the current period only, excluding previous balances, payments, and carried-forward amounts. Use null if not printed.\nprevious_balance: Copy the printed previous or past-due balance, if any.\nDates: Copy dates as printed.\ninvoice_total: Copy the printed Invoice Total, Total Due, Amount Due, or Balance Due for this invoice.\namount_due: Copy the printed amount due. Never calculate invoice_total or amount_due.\nIGNORE IRRELEVANT TEXT\n\nIgnore warranty, legal, policy, remittance, and marketing text unless it contains one of the requested fields.\n\nSTATEMENTS\n\nIf document_type is STATEMENT:\n- Fill the statement object.\n- Set invoices to an empty array.\n- Ignore invoice copies attached after the statement.\n- Record each transaction once.\n- Payments and credits are transactions, not invoices.\n\nEXCEPTIONS\n\nList important fields explicitly labeled on a valid billing document but unreadable. Do not use exceptions for ordinary non-billing documents.\n\nOUTPUT STRUCTURE\n\nReturn exactly this JSON structure, with every key present:\n\n{\n  \"document_type\": null,\n  \"document_title\": null,\n  \"vendor\": {\n    \"name\": null,\n    \"account\": null,\n    \"address\": null,\n    \"city\": null,\n    \"state\": null,\n    \"zip\": null\n  },\n  \"customer\": {\n    \"name\": null,\n    \"account\": null,\n    \"address\": null,\n    \"city\": null,\n    \"state\": null,\n    \"zip\": null\n  },\n  \"ship_to\": {\n    \"name\": null,\n    \"street\": null,\n    \"city\": null,\n    \"state\": null,\n    \"zip\": null,\n    \"full_address\": null\n  },\n  \"invoices\": [\n    {\n      \"invoice_number\": null,\n      \"document_type\": null,\n      \"invoice_date\": null,\n      \"due_date\": null,\n      \"payment_terms\": null,\n      \"po_number\": null,\n      \"account_number\": null,\n      \"job_number\": null,\n      \"service_address\": null,\n      \"charge_summary\": null,\n      \"subtotal\": null,\n      \"freight\": null,\n      \"tax\": null,\n      \"invoice_total\": null,\n      \"amount_due\": null,\n      \"current_charges\": null,\n      \"previous_balance\": null\n    }\n  ],\n  \"statement\": null,\n  \"exceptions\": []\n}\n\nSTATEMENT OBJECT STRUCTURE\n\nWhen document_type is STATEMENT, use this statement object:\n\n{\n  \"statement_date\": null,\n  \"account_number\": null,\n  \"due_date\": null,\n  \"previous_balance\": null,\n  \"payments\": null,\n  \"credits\": null,\n  \"current_charges\": null,\n  \"amount_due\": null,\n  \"transactions\": [\n    {\n      \"date\": null,\n      \"type\": null,\n      \"invoice_number\": null,\n      \"reference\": null,\n      \"po_number\": null,\n      \"amount\": null,\n      \"balance\": null\n    }\n  ]\n}\n\nFor NOT_A_VALID_PDF:\n- Return the main JSON structure.\n- Set document_type to NOT_A_VALID_PDF.\n- Set invoices to [].\n- Set statement to null.\n- Set exceptions to [].\n- Leave vendor, customer, and ship_to fields null, except document_title if readable.\n\nEnsure the output is syntactically valid JSON and contains no text outside the JSON object.`\n  },\n  {\n    role: 'user',\n    content:\n      'Email subject: ' + ($json.__meta?.subject ?? '') +\n      '\\nFile name: ' + ($json.__meta?.file_name ?? '') +\n      '\\nEmail body: ' + ($json.__meta?.body_preview ?? '') +\n      '\\nDocument source: ' + ($json.source ?? 'PDF') +\n      '\\n\\nDocument text:\\n' + ($json.text ?? '')\n  }\n] }}"
+            },
+            {
+              "name": "thinking",
+              "value": "={{ {\"type\": \"disabled\"} }}"
+            }
+          ]
+        },
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 10000
+            }
+          },
+          "timeout": 180000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "Sj39ZbxmWxCZ8r7T",
+          "name": "Z.ai GLM Account"
+        }
+      },
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "eed59b51-5da9-4b23-83a4-11ff9d7f7cfa",
+      "name": "Extract Lines (Indirect)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        9152,
+        10032
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Build Config').first().json.cfg.GLOBAL_CONFIG.extraction_endpoint }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "={{ $('Build Config').first().json.cfg.GLOBAL_CONFIG.glm_extraction_model }}"
+            },
+            {
+              "name": "max_tokens",
+              "value": "={{ $('Build Config').first().json.cfg.GLOBAL_CONFIG.glm_lines_max_tokens }}"
+            },
+            {
+              "name": "temperature",
+              "value": "={{ 0 }}"
+            },
+            {
+              "name": "response_format",
+              "value": "={{ {\"type\": \"json_object\"} }}"
+            },
+            {
+              "name": "messages",
+              "value": "={{ [ { role: 'system', content: \"Return ONLY valid JSON. No markdown, no code fences, no commentary.\\n\\nYou are an accounts-payable document reader. Transcribe values exactly as printed. Do not infer, classify, derive codes, calculate, or guess. If a value is not printed, use null.\\n\\nThis is STAGE 2: list the LINE ITEMS of ONE invoice. The PDF may contain several invoices; use only the rows that belong to the invoice number given by the user, and ignore every other invoice.\\n\\nLINE ITEMS\\n- Product and service rows only. Never subtotal, tax, freight, shipping, discount, total, previous balance, payments, or balance forward rows.\\n- Text extracted from a PDF often lists table columns vertically. Rebuild the original rows: the Nth item number goes with the Nth description, quantity, unit price and amount.\\n- Never merge two rows. Never concatenate SKUs, quantities, descriptions or amounts from different rows. A description that wraps across lines under one SKU is one row.\\n- sku: the vendor item / part / product number printed on the row.\\n- quantity is the shipped or invoiced quantity when both ordered and shipped are shown.\\n- Copy unit_price and amount as printed; never calculate them. Money: write every amount as a JSON string of digits and one decimal point, no currency symbols or commas, negative amounts start with a minus sign. Copy exactly as printed. Unreadable values are null.\\n- Include every product and service row of that invoice.\\n\\nOUTPUT exactly: {\\\"invoice_number\\\": null, \\\"line_items\\\": [{\\\"sku\\\": null, \\\"description\\\": null, \\\"quantity\\\": null, \\\"unit_price\\\": null, \\\"amount\\\": null} ] }\" },\n  { role: 'user', content:\n      'Invoice number: ' + ($('Restore Routed Ctx').first().json.invoice?.invoice_number ?? '') +\n      '\\nPO number: ' + ($('Restore Routed Ctx').first().json.invoice?.po_number_raw ?? '') +\n      '\\nInvoice total: ' + ($('Restore Routed Ctx').first().json.invoice?.invoice_total ?? '') +\n      '\\n\\nPDF text:\\n' + ($('Restore Routed Ctx').first().json.source_text ?? '') }\n] }}"
+            },
+            {
+              "name": "thinking",
+              "value": "={{ {\"type\": \"disabled\"} }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "Sj39ZbxmWxCZ8r7T",
+          "name": "Z.ai GLM Account"
+        }
+      },
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "10a4e2f3-14c8-4c3f-9ea8-b4f212f23569",
+      "name": "Extract PDFs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3552,
+        10096
+      ],
+      "parameters": {
+        "jsCode": "// One item per PDF attachment. An email without a PDF becomes one item carrying its body text,\n// so invoices sent in the email body (common for utilities) can be read like a PDF.\nconst htmlToText = h => String(h ?? '')\n  .replace(/<(style|script|head)[\\s\\S]*?<\\/\\1>/gi, ' ')\n  .replace(/<br\\s*\\/?>|<\\/(p|div|tr|li|h\\d|table)>/gi, '\\n')\n  .replace(/<\\/t[dh]>/gi, '\\t')\n  .replace(/<[^>]+>/g, ' ')\n  .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')\n  .replace(/&#39;|&apos;/gi, \"'\").replace(/&quot;/gi, '\"').replace(/&#(\\d+);/g, (_, n) => String.fromCharCode(n))\n  .replace(/[ \\t]+/g, ' ').replace(/\\n\\s*\\n+/g, '\\n').trim();\nconst out = [];\nfor (const item of $input.all()) {\n  const m = item.json;\n  // Works for both the Outlook trigger and the Gmail trigger (simple = off).\n  const meta = {\n    message_id: m.id ?? null,\n    subject: m.subject ?? '',\n    body_preview: m.bodyPreview ?? m.snippet ?? String(m.text ?? '').slice(0, 500),\n    from: m.from?.emailAddress?.address ?? m.from?.value?.[0]?.address ?? m.from?.text ?? null,\n    received_at: m.receivedDateTime ?? m.date ?? null,\n  };\n  let count = 0;\n  for (const file of Object.values(item.binary ?? {})) {\n    const name = String(file.fileName ?? '').trim();\n    const mime = String(file.mimeType ?? '').trim().toLowerCase();\n    if (!(mime === 'application/pdf' || name.toLowerCase().endsWith('.pdf'))) continue;\n    count++;\n    out.push({ json: { ...meta, file_name: name, has_pdf: true, source: 'PDF' }, binary: { data: file } });\n  }\n  if (!count) {\n    const plain = String(m.text ?? '').trim();\n    const body_text = plain.length > 40 ? plain : htmlToText(m.html ?? m.body?.content ?? m.textAsHtml ?? '');\n    out.push({ json: { ...meta, file_name: null, has_pdf: false, source: 'EMAIL_BODY', body_text } });\n  }\n}\nreturn out;\n"
+      }
+    },
+    {
+      "id": "6810f365-212a-4c2d-8d15-a2230044828f",
+      "name": "Gmail Trigger",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        3056,
+        10208
+      ],
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {},
+        "options": {
+          "downloadAttachments": true
+        }
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Aftj6gLNK1h0LoyX",
+          "name": "my account"
+        }
+      }
+    },
+    {
+      "id": "d5bf0b35-2ee1-442e-80f3-cf582feba894",
+      "name": "Has Invoice Content?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        4432,
+        10096
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "1344dd0d-66a5-4322-b434-da966d2086a0",
+              "leftValue": "={{ $json.has_pdf === true || (String($json.body_text ?? '').length >= $('Build Config').first().json.cfg.INV_PROC_CONFIG.email_body_min_chars && /\\d[\\d,]*\\.\\d{2}/.test(String($json.body_text ?? ''))) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "877d9753-ea23-4035-bab3-748840690f56",
+      "name": "If",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        5568,
+        10096
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "6e227ae6-6cb5-4bf0-a4d7-3594e34c4748",
+              "leftValue": "={{ $json.document_type }}",
+              "rightValue": "NOT_A_VALID_PDF",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c7293082-d578-4136-9dbd-a5a43e2508fc",
+      "name": "Insert Tracking Row",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        6640,
+        10128
+      ],
+      "parameters": {
+        "dataTableId": {
+          "__rl": true,
+          "value": "YQpLj9gtvsYErCBh",
+          "mode": "list",
+          "cachedResultName": "New Business Processing Datatable",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/YQpLj9gtvsYErCBh"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "message_id": "={{ $json.message_id }}",
+            "subject": "={{ $json.subject }}",
+            "attachment_name": "={{ $json.file_name ?? '' }}",
+            "document_type": "={{ $json.document_type ?? '' }}",
+            "vendor_name": "={{ $json.vendor?.name ?? '' }}",
+            "invoice_number": "={{ $json.invoice?.invoice_number ?? '' }}",
+            "po_number": "={{ $json.invoice?.po_number_raw ?? '' }}",
+            "total_amount": "={{ $json.invoice?.invoice_total != null ? String($json.invoice.invoice_total) : '' }}",
+            "payment_terms": "={{ $json.invoice?.payment_terms ?? '' }}",
+            "processing_status": "RECEIVED",
+            "document_id": "={{ $json.doc_id ?? '' }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "document_id",
+              "displayName": "document_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "document_type",
+              "displayName": "document_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "vendor_name",
+              "displayName": "vendor_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "invoice_number",
+              "displayName": "invoice_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "po_number",
+              "displayName": "po_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "location_id",
+              "displayName": "location_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "location_name",
+              "displayName": "location_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "gl_code",
+              "displayName": "gl_code",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "gl_name",
+              "displayName": "gl_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "sage_bill_id",
+              "displayName": "sage_bill_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "subject",
+              "displayName": "subject",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "attachment_name",
+              "displayName": "attachment_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "processing_status",
+              "displayName": "processing_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "exception_reason",
+              "displayName": "exception_reason",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "message_id",
+              "displayName": "message_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "total_amount",
+              "displayName": "total_amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "invoice_price_mismatch",
+              "displayName": "invoice_price_mismatch",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "invoice_qty_mismatch",
+              "displayName": "invoice_qty_mismatch",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "invoice_location_mismatch",
+              "displayName": "invoice_location_mismatch",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "invoice_vendor_mismatch",
+              "displayName": "invoice_vendor_mismatch",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "account_number_match",
+              "displayName": "account_number_match",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "utility_invoice_match_status",
+              "displayName": "utility_invoice_match_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "payment_terms",
+              "displayName": "payment_terms",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "2c4108de-7d5c-4d68-aa43-b092cf1fd165",
+      "name": "LLM Location Fallback1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7792,
+        9952
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Build Config').first().json.cfg.GLOBAL_CONFIG.extraction_endpoint }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "={{ $('Build Config').first().json.cfg.GLOBAL_CONFIG.glm_extraction_model }}"
+            },
+            {
+              "name": "max_tokens",
+              "value": "={{ $('Build Config').first().json.cfg.GLOBAL_CONFIG.glm_fallback_max_tokens }}"
+            },
+            {
+              "name": "temperature",
+              "value": "={{ 0.1 }}"
+            },
+            {
+              "name": "messages",
+              "value": "={{ [\n  {\n    role: 'user',\n    content:\n      ($json.location?.fallback_prompt ?? '') +\n      '\\n\\nSHIP-TO OBJECT:\\n' +\n      JSON.stringify($json.ship_to ?? {}) +\n      '\\n\\nINVOICE OBJECT:\\n' +\n      JSON.stringify($json.invoice ?? {}) +\n      '\\n\\nPO OBJECT:\\n' +\n      JSON.stringify($json.po ?? {}) +\n      '\\n\\nFULL INPUT FOR DEBUGGING:\\n' +\n      JSON.stringify($json)\n  }\n] }}"
+            },
+            {
+              "name": "thinking",
+              "value": "={{ {\"type\": \"disabled\"} }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "Sj39ZbxmWxCZ8r7T",
+          "name": "Z.ai GLM Account"
+        }
+      },
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "7dca40d1-3266-4673-97c2-7e00d13d2c59",
+      "name": "Load Config",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        3776,
+        10096
+      ],
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "o7jlGvq1uEqz6zIy",
+          "mode": "list",
+          "cachedResultName": "summers.datastore.config.keys",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/o7jlGvq1uEqz6zIy"
+        },
+        "returnAll": true
+      },
+      "executeOnce": true
+    },
+    {
+      "id": "45192cf6-4887-40e1-a221-afca9e32f81b",
+      "name": "Load Location Master",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        5808,
+        10096
+      ],
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "rtOK1UEM6RUOcEUC",
+          "mode": "list",
+          "cachedResultName": "Location_Master",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/rtOK1UEM6RUOcEUC"
+        },
+        "returnAll": true
+      },
+      "executeOnce": true,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "8d8dea77-29a6-4ce3-bc81-35f0e6890a71",
+      "name": "Loop Invoices",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        6256,
+        10096
+      ],
+      "parameters": {
+        "options": {
+          "reset": false
+        }
+      }
+    },
+    {
+      "id": "241ef90c-14db-436e-873d-452f4f6f482d",
+      "name": "Mark Posted",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        11392,
+        9872
+      ],
+      "parameters": {
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "value": "YQpLj9gtvsYErCBh",
+          "mode": "list",
+          "cachedResultName": "New Business Processing Datatable",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/YQpLj9gtvsYErCBh"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "keyValue": "={{ $json.tracking_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "processing_status": "POSTED",
+            "sage_bill_id": "={{ $json.sage_bill_id ?? '' }}",
+            "gl_code": "={{ $json.payload?.lines?.[0]?.gl_account ?? '' }}",
+            "gl_name": "={{ $json.payload?.lines?.[0]?.gl_name ?? '' }}",
+            "location_name": "={{ ($json.location?.code ?? '') + ' / ' + ($json.location?.entity_id ?? '') }}",
+            "exception_reason": "={{ '' }}",
+            "warnings": "={{ ($json.warnings || []).join('; ').slice(0, 2000) }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "processing_status",
+              "displayName": "processing_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "sage_bill_id",
+              "displayName": "sage_bill_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "gl_code",
+              "displayName": "gl_code",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "gl_name",
+              "displayName": "gl_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "location_name",
+              "displayName": "location_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "exception_reason",
+              "displayName": "exception_reason",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "warnings",
+              "displayName": "warnings",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "cdd0261d-5aa8-4ffc-9d33-d354d0ea06e9",
+      "name": "Mark Statement Routed",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        9824,
+        10400
+      ],
+      "parameters": {
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "value": "YQpLj9gtvsYErCBh",
+          "mode": "list",
+          "cachedResultName": "New Business Processing Datatable",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/YQpLj9gtvsYErCBh"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "keyValue": "={{ $json.tracking_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "processing_status": "={{ $json.status }}",
+            "document_type": "STATEMENT",
+            "vendor_name": "={{ $json.vendor?.name ?? '' }}",
+            "lane": "STATEMENT",
+            "location_id": "={{ $json.location?.entity_id ?? '' }}",
+            "exception_reason": "={{ $json.status === 'RECONCILED' ? '' : String($json.reason ?? '').slice(0, 2000) }}",
+            "match_details": "={{ String($json.reason ?? '').slice(0, 2000) }}",
+            "total_amount": "={{ $json.stmt?.amount_due != null ? String($json.stmt.amount_due) : '' }}",
+            "variance_amount": "={{ $json.recon?.totals?.unexplained_difference ?? null }}",
+            "line_count": "={{ $json.stmt?.transactions?.length ?? null }}",
+            "warnings": "={{ ($json.warnings || []).join('; ').slice(0, 2000) }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "processing_status",
+              "displayName": "processing_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "document_type",
+              "displayName": "document_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "vendor_name",
+              "displayName": "vendor_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "lane",
+              "displayName": "lane",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "location_id",
+              "displayName": "location_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "exception_reason",
+              "displayName": "exception_reason",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "match_details",
+              "displayName": "match_details",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "total_amount",
+              "displayName": "total_amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "variance_amount",
+              "displayName": "variance_amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "line_count",
+              "displayName": "line_count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "warnings",
+              "displayName": "warnings",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "8c8fa737-be96-43b0-b6ea-8b9238c47b36",
+      "name": "Needs Location Fallback?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        7536,
+        10128
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "8f1fcbcc-b425-4794-81c4-70b18c8bb5ae",
+              "leftValue": "={{ !$json.route && $json.location?.allow_fallback === true && $json.po?.valid === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "815f01cb-f86d-42d6-87b2-b7263dd39c16",
+      "name": "Normalize Lane Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9824,
+        9904
+      ],
+      "parameters": {
+        "jsCode": "// If the sub-flow itself crashed, turn that into an exception that still carries the invoice context.\nconst r = $input.first()?.json;\nif (!r || (r.error && !r.doc_id)) {\n  const ctx = JSON.parse(JSON.stringify($('Classify Lane').first().json));\n  ctx.status = 'SUBFLOW_ERROR';\n  ctx.reason = `${ctx.lane} sub-flow failed: ${r?.error?.message || r?.error || 'no output'}`;\n  return [{ json: ctx }];\n}\nreturn [{ json: r }];\n"
+      }
+    },
+    {
+      "id": "a4d1f0bb-1b59-4d55-9dbf-e404cca1d726",
+      "name": "Normalize Post Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10944,
+        9808
+      ],
+      "parameters": {
+        "jsCode": "const r = $input.first()?.json;\nif (!r || (r.error && !r.doc_id)) {\n  const ctx = JSON.parse(JSON.stringify($('Normalize Lane Result').first().json));\n  ctx.status = 'POST_FAILED';\n  ctx.reason = `Sage Post sub-flow failed: ${r?.error?.message || r?.error || 'no output'}`;\n  return [{ json: ctx }];\n}\nreturn [{ json: r }];\n"
+      }
+    },
+    {
+      "id": "15b80f3f-61b5-4026-b42e-e18a46bf50be",
+      "name": "Normalize Statement Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9376,
+        10336
+      ],
+      "parameters": {
+        "jsCode": "// If the Statement sub-flow crashed, keep the document context and turn it into an exception.\nconst r = $input.first()?.json;\nif (!r || (r.error && !r.doc_id)) {\n  const ctx = JSON.parse(JSON.stringify($('Restore Routed Ctx').first().json));\n  ctx.status = 'STATEMENT_FAILED';\n  ctx.reason = `Statement sub-flow failed: ${r?.error?.message || r?.error || 'no output'}`;\n  return [{ json: ctx }];\n}\nreturn [{ json: r }];\n"
+      }
+    },
+    {
+      "id": "29a274f3-757d-4c1a-ac67-2a4bd5b6cf20",
+      "name": "Outlook: AP Inbox",
+      "type": "n8n-nodes-base.microsoftOutlookTrigger",
+      "typeVersion": 1,
+      "position": [
+        3056,
+        10016
+      ],
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "filters": {
+          "hasAttachments": true
+        },
+        "options": {
+          "downloadAttachments": true
+        }
+      },
+      "credentials": {
+        "microsoftOutlookOAuth2Api": {
+          "id": "cAQ9oZ8v24e2Av5G",
+          "name": "Microsoft Outlook account 5"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "id": "121b03fe-ce7a-474b-bc93-f712ee4cb775",
+      "name": "Parse & Validate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5360,
+        10096
+      ],
+      "parameters": {
+        "jsCode": "\n/*\n * Parse LLM output, normalize, validate, and split into one item per invoice.\n * Uses:\n *   - Extract from File: extracted PDF text and PDF metadata\n *   - Extract PDFs: Outlook email and attachment metadata\n *\n * Bad documents become EXCEPTION items instead of stopping the batch.\n */\n\nconst llmItems = $input.all();\nconst extractedItems = $('Prep Docs').all();   // text + source + __meta, aligned 1:1 with the LLM items\nconst TOL = $('Build Config').first().json.cfg.INV_PROC_CONFIG.validation_tolerance;\n\n\nconst out = [];\n\nconst errText = e =>\n  typeof e === 'string' ? e : (e?.message || JSON.stringify(e));\n\nconst round2 = n => Math.round(n * 100) / 100;\n\n/*\n * Strict amount parser.\n * Accepts JSON numbers and printed amounts: 1,234.56  -234.89  (234.89)  234.89-  $1,234.56\n * Anything else is REJECTED (bad = true), never \"cleaned up\". The old version stripped every\n * non-digit character, so a corrupted token such as \"-234.!89!!89\" silently became -234.8989.\n */\nconst AMOUNT_RE = /^(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?$|^\\.\\d+$/;\n\nfunction parseAmount(v) {\n  if (v === null || v === undefined || v === '') return { value: null, bad: false };\n  if (typeof v === 'number') {\n    return Number.isFinite(v) ? { value: v, bad: false } : { value: null, bad: true };\n  }\n\n  let s = String(v).trim();\n  if (!s) return { value: null, bad: false };\n\n  let neg = false;\n  if (/^\\(.*\\)$/.test(s)) { neg = true; s = s.slice(1, -1).trim(); }\n  if (/-$/.test(s)) { neg = true; s = s.slice(0, -1).trim(); }\n  if (/^[-\\u2212\\u2013]/.test(s)) { neg = true; s = s.slice(1).trim(); }\n  s = s.replace(/^[$\\u20AC\\u00A3]\\s*/, '');\n\n  if (!AMOUNT_RE.test(s)) return { value: null, bad: true };\n\n  const n = Number(s.replace(/,/g, ''));\n  if (!Number.isFinite(n)) return { value: null, bad: true };\n\n  return { value: neg ? -n : n, bad: false };\n}\n\nconst num = v => parseAmount(v).value;\n\n/*\n * Every number printed in the document, as integer cents.\n * Used to prove that each amount the LLM returned really appears in the source text.\n */\nfunction buildSrcCents(text) {\n  const set = new Set();\n  const add = s => { const n = Number(s); if (Number.isFinite(n)) set.add(Math.round(n * 100)); };\n  for (const t of String(text).match(/\\d[\\d,]*(?:\\.\\d+)?|\\.\\d+/g) || []) {\n    add(t.replace(/,/g, ''));\n    // PDF text extraction can glue two numbers together (quantity 3 + price 149.99 -> 3149.99).\n    // For a decimal token with no thousands separators and 4+ integer digits, also accept its trailing digit groups.\n    const m = t.match(/^(\\d{4,})(\\.\\d+)$/);\n    if (m) for (let i = 1; i < m[1].length; i++) add(m[1].slice(i) + m[2]);\n  }\n  return set;\n}\n\n// Document types the prompt defines. Anything else is never processed as an invoice.\nconst ALLOWED_DOC_TYPES = ['INVOICE', 'CREDIT_MEMO', 'STATEMENT', 'MIXED', 'NOT_A_VALID_PDF'];\nconst ALLOWED_INVOICE_TYPES = ['INVOICE', 'CREDIT_MEMO'];\nconst normType = v => String(v ?? '').trim().toUpperCase().replace(/[\\s-]+/g, '_');\n\n// Statement amounts get the same checks as invoice amounts: readable, and present in the document text.\nfunction checkStatementAmounts(st, srcCents) {\n  const problems = [];\n  const chk = (v, label) => {\n    const r = parseAmount(v);\n    if (r.bad) problems.push(`${label} unreadable \"${String(v).slice(0, 40)}\"`);\n    else if (r.value !== null && r.value !== 0 && !srcCents.has(Math.round(Math.abs(r.value) * 100)))\n      problems.push(`${label} ${r.value} not found in document text`);\n  };\n  for (const k of ['previous_balance', 'payments', 'credits', 'current_charges', 'amount_due']) chk(st?.[k], k);\n  (Array.isArray(st?.transactions) ? st.transactions : []).forEach((t, i) => {\n    chk(t?.amount, `transaction ${i + 1} amount`);\n    chk(t?.balance, `transaction ${i + 1} balance`);\n  });\n  return problems;\n}\n\nconst MONEY_KEYS = [\n  'subtotal', 'freight', 'tax', 'invoice_total',\n  'amount_due', 'current_charges', 'previous_balance'\n];\n\nfunction normalizeStatement(st, warnings) {\n  if (!st || typeof st !== 'object') return st ?? null;\n  const o = { ...st };\n  const fix = (obj, k, label) => {\n    if (!(k in obj)) return;\n    const r = parseAmount(obj[k]);\n    if (r.bad) warnings.push(`Unreadable statement ${label} \"${String(obj[k]).slice(0, 40)}\"`);\n    obj[k] = r.value;\n  };\n  for (const k of ['previous_balance', 'payments', 'credits', 'current_charges', 'amount_due']) fix(o, k, k);\n  if (Array.isArray(o.transactions)) {\n    o.transactions = o.transactions.map((t, i) => {\n      const x = { ...(t || {}) };\n      fix(x, 'amount', `transaction ${i + 1} amount`);\n      fix(x, 'balance', `transaction ${i + 1} balance`);\n      return x;\n    });\n  }\n  return o;\n}\n\nconst pad = x => String(x).padStart(2, '0');\n\nfunction isoDate(v) {\n  if (!v) return null;\n\n  const s = String(v).trim();\n\n  // YYYY-MM-DD or YYYY-MM-DD followed by a time\n  let m = s.match(/^(\\d{4})-(\\d{1,2})-(\\d{1,2})/);\n\n  if (m) {\n    return `${m[1]}-${pad(m[2])}-${pad(m[3])}`;\n  }\n\n  // MM/DD/YYYY, MM-DD-YYYY, or MM.DD.YYYY\n  m = s.match(/^(\\d{1,2})[\\/.-](\\d{1,2})[\\/.-](\\d{2,4})$/);\n\n  if (m) {\n    const year = m[3].length === 2 ? '20' + m[3] : m[3];\n    return `${year}-${pad(m[1])}-${pad(m[2])}`;\n  }\n\n  const d = new Date(s);\n\n  if (!isNaN(d.getTime())) {\n    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;\n  }\n\n  return null;\n}\n\nfunction parseLLM(resp) {\n  if (!resp || resp.error) {\n    return {\n      error: 'LLM request failed' +\n        (resp?.error ? `: ${errText(resp.error)}` : '')\n    };\n  }\n\n  const choice = resp.choices?.[0];\n  const raw = choice?.message?.content;\n\n  const finish = choice?.finish_reason;\n  if (finish === 'length') {\n    return { error: 'LLM output truncated (finish_reason=length); raise glm_header_max_tokens' };\n  }\n  if (finish !== undefined && finish !== null && finish !== 'stop') {\n    return { error: `LLM did not finish normally (finish_reason=${finish})` };\n  }\n\n  if (!raw) {\n    return { error: 'LLM returned empty content' };\n  }\n\n  const cleaned = String(raw)\n    .replace(/^```(?:json)?\\s*/i, '')\n    .replace(/\\s*```\\s*$/, '')\n    .trim();\n\n  try {\n    return { data: JSON.parse(cleaned) };\n  } catch (e) {\n    const a = cleaned.indexOf('{');\n    const b = cleaned.lastIndexOf('}');\n\n    if (a >= 0 && b > a) {\n      try {\n        return { data: JSON.parse(cleaned.slice(a, b + 1)) };\n      } catch (e2) {\n        // Continue to the parsing error below.\n      }\n    }\n\n    const at = Number((/position (\\d+)/.exec(e.message) || [])[1]);\n    const near = Number.isFinite(at)\n      ? ' near: ' + JSON.stringify(cleaned.slice(Math.max(0, at - 30), at + 30))\n      : '';\n\n    return {\n      error: 'Could not parse LLM JSON: ' + e.message + near\n    };\n  }\n}\n\nconst pick = (o, keys) =>\n  Object.fromEntries(keys.map(k => [k, o?.[k] ?? null]));\n\n/*\n * Normalize one invoice or credit memo.\n */\nfunction buildInvoice(shared, inv, k, count, parentDocType, srcCents) {\n  const warnings = [];\n\n  // Strict amounts: unreadable or not-in-document values fail this invoice instead of flowing on.\n  const m = {};\n  const integrity = [];\n\n  for (const key of MONEY_KEYS) {\n    const r = parseAmount(inv[key]);\n    m[key] = r.value;\n\n    if (r.bad) {\n      integrity.push(`${key} unreadable \"${String(inv[key]).slice(0, 40)}\"`);\n    } else if (\n      r.value !== null &&\n      r.value !== 0 &&\n      !srcCents.has(Math.round(Math.abs(r.value) * 100))\n    ) {\n      integrity.push(`${key} ${r.value} not found in document text`);\n    }\n  }\n\n  const individualDocType = normType(\n    inv.document_type ||\n    (String(inv.invoice_category || '').toUpperCase() === 'CREDIT_MEMO'\n      ? 'CREDIT_MEMO'\n      : parentDocType === 'MIXED'\n        ? 'INVOICE'\n        : parentDocType || 'INVOICE')\n  );\n\n  const lines = (Array.isArray(inv.line_items) ? inv.line_items : [])\n    .map(li => ({\n      sku: li.sku ?? null,\n      description: li.description ?? null,\n      quantity: num(li.quantity),\n      unit_price: num(li.unit_price),\n      amount: num(li.amount)\n    }))\n    .filter(l => l.sku || l.description || l.amount !== null);\n\n  const invoice = {\n    invoice_number: inv.invoice_number\n      ? String(inv.invoice_number).trim()\n      : null,\n\n    invoice_date: isoDate(inv.invoice_date),\n    invoice_date_raw: inv.invoice_date ?? null,\n\n    due_date: isoDate(inv.due_date),\n    due_date_raw: inv.due_date ?? null,\n\n    payment_terms: inv.payment_terms ?? inv.term ?? null,\n\n    po_number_raw: inv.po_number\n      ? String(inv.po_number).trim()\n      : null,\n\n    account_number: inv.account_number\n      ? String(inv.account_number).trim()\n      : null,\n\n    job_number: inv.job_number ?? null,\n    service_address: inv.service_address ?? null,\n    charge_summary: inv.charge_summary ?? null,\n\n    subtotal: m.subtotal,\n    freight: m.freight,\n    tax: m.tax,\n    invoice_total: m.invoice_total,\n    amount_due: m.amount_due,\n    current_charges: m.current_charges,\n    previous_balance: m.previous_balance,\n\n    line_items: lines\n  };\n\n  if (inv.due_date && !invoice.due_date) {\n    warnings.push(`Unreadable due date \"${inv.due_date}\"`);\n  }\n\n  /*\n   * Use printed totals when present.\n   * Derive totals only when they are missing.\n   */\n  const priced = lines.filter(l => l.amount !== null);\n  const lineSum = round2(\n    priced.reduce((sum, l) => sum + l.amount, 0)\n  );\n\n  if (invoice.subtotal === null && priced.length) {\n    invoice.subtotal = lineSum;\n    warnings.push('Subtotal derived from line items');\n  }\n\n  if (invoice.invoice_total === null) {\n    if (invoice.amount_due !== null) {\n      invoice.invoice_total = invoice.amount_due;\n      warnings.push('Invoice total taken from amount due');\n    } else if (invoice.subtotal !== null) {\n      invoice.invoice_total = round2(\n        invoice.subtotal +\n        (invoice.tax ?? 0) +\n        (invoice.freight ?? 0)\n      );\n\n      warnings.push(\n        'Invoice total derived from subtotal + tax + freight'\n      );\n    }\n  }\n\n  // Arithmetic checks: warnings only.\n  for (const line of lines) {\n    if (\n      line.quantity !== null &&\n      line.unit_price !== null &&\n      line.amount !== null &&\n      Math.abs(\n        round2(line.quantity * line.unit_price) - line.amount\n      ) > TOL\n    ) {\n      warnings.push(\n        `Line ${line.sku ?? line.description}: qty × price ≠ amount`\n      );\n    }\n  }\n\n  if (\n    priced.length &&\n    invoice.subtotal !== null &&\n    Math.abs(lineSum - invoice.subtotal) > TOL &&\n    Math.abs(\n      lineSum + (invoice.freight ?? 0) - invoice.subtotal\n    ) > TOL\n  ) {\n    warnings.push(\n      `Line items sum ${lineSum} ≠ subtotal ${invoice.subtotal}`\n    );\n  }\n\n  if (\n    invoice.subtotal !== null &&\n    invoice.invoice_total !== null\n  ) {\n    const expected = round2(\n      invoice.subtotal +\n      (invoice.tax ?? 0) +\n      (invoice.freight ?? 0)\n    );\n\n    const subtotalPlusTax = round2(\n      invoice.subtotal + (invoice.tax ?? 0)\n    );\n\n    if (\n      Math.abs(expected - invoice.invoice_total) > TOL &&\n      Math.abs(subtotalPlusTax - invoice.invoice_total) > TOL\n    ) {\n      warnings.push(\n        `Subtotal + tax + freight (${expected}) ≠ total ${invoice.invoice_total}`\n      );\n    }\n  }\n\n  // Utility bills sometimes have no printed invoice number.\n  if (\n    !invoice.invoice_number &&\n    invoice.account_number &&\n    invoice.invoice_date\n  ) {\n    invoice.invoice_number =\n      `${invoice.account_number.replace(/[^A-Za-z0-9]/g, '')}-` +\n      `${invoice.invoice_date.replace(/-/g, '')}`;\n\n    warnings.push(\n      `No invoice number printed; using ${invoice.invoice_number}`\n    );\n  }\n\n  // Printed totals must add up. A digit-level corruption almost always breaks this sum.\n  // Invoices with deposits, discounts or partial payments printed between subtotal and total can fail here legitimately; they go to review instead of posting.\n  const printedTotal = m.invoice_total ?? m.amount_due;\n  const totalsBad = m.subtotal !== null && printedTotal !== null &&\n    Math.abs(round2(m.subtotal + (m.tax ?? 0) + (m.freight ?? 0)) - printedTotal) > TOL &&\n    Math.abs(round2(m.subtotal + (m.tax ?? 0)) - printedTotal) > TOL;\n\n  const missing = [];\n\n  // No printed vendor name is OK on a PO invoice: the Direct flow takes the vendor from the ServiceTitan PO.\n  if (!shared.vendor?.name) {\n    if (invoice.po_number_raw) warnings.push('Vendor name not printed; will use the ServiceTitan PO vendor');\n    else missing.push('vendor name');\n  }\n  if (!invoice.invoice_number) missing.push('invoice number');\n  if (!invoice.invoice_date) missing.push('invoice date');\n  if (invoice.invoice_total === null) missing.push('invoice total');\n\n  /*\n   * Keep document_type and invoice_category at the top level\n   * so downstream routing can distinguish credit memos.\n   */\n  let invoiceCategory = inv.invoice_category ?? null;\n\n  if (\n    individualDocType === 'CREDIT_MEMO' &&\n    !invoiceCategory\n  ) {\n    invoiceCategory = 'CREDIT_MEMO';\n  }\n\n  const ctx = {\n    ...shared,\n\n    doc_id: `${shared.doc_id}-${k + 1}`,\n    invoice_index: k + 1,\n    invoice_count: count,\n\n    document_type: individualDocType,\n    invoice_category: invoiceCategory,\n\n    invoice,\n\n    warnings: [...(shared.warnings || []), ...warnings],\n\n    route: null,\n    status: null,\n    reason: null\n  };\n\n  if (!ALLOWED_INVOICE_TYPES.includes(individualDocType)) {\n    ctx.route = 'EXCEPTION';\n    ctx.status = 'UNSUPPORTED_DOCUMENT_TYPE';\n    ctx.reason = `Unsupported document_type \"${individualDocType || 'none'}\" on an invoice record`;\n  } else if (integrity.length) {\n    ctx.route = 'EXCEPTION';\n    ctx.status = 'EXTRACTION_FAILED';\n    ctx.reason = 'Amount check failed (LLM output does not match document text): ' + integrity.join('; ');\n  } else if (missing.length) {\n    ctx.route = 'EXCEPTION';\n    ctx.status = 'VALIDATION_FAILED';\n    ctx.reason = 'Missing: ' + missing.join(', ');\n  } else if (totalsBad) {\n    ctx.route = 'EXCEPTION';\n    ctx.status = 'TOTALS_MISMATCH';\n    ctx.reason = `Printed subtotal/tax/freight do not add up to printed total ${printedTotal}`;\n  }\n\n  return ctx;\n}\n\n/*\n * Process every LLM item separately.\n */\nfor (let i = 0; i < llmItems.length; i++) {\n  const extracted = extractedItems[i]?.json ?? {};\n  const meta = extracted.__meta ?? {};\n\n  const base = {\n    doc_id: `DOC-${Date.now()}-${i + 1}`,\n\n    message_id: meta.message_id ?? null,\n    subject: meta.subject ?? '',\n    body_preview: meta.body_preview ?? '',\n    from: meta.from ?? null,\n    received_at: meta.received_at ?? null,\n    file_name: meta.file_name ?? null,\n\n    page_count: extracted.numpages ?? null,\n    source: extracted.source ?? 'PDF',\n\n    warnings: [],\n    source_text: null\n  };\n\n  const fail = (status, reason, extra = {}) => {\n    out.push({\n      json: {\n        ...base,\n        ...extra,\n        route: 'EXCEPTION',\n        status,\n        reason\n      }\n    });\n  };\n\n  /*\n   * Extract from File returns PDF text in `text`.\n   * It does not return the old GLM OCR `md_results` field.\n   */\n  const pdfText = extracted.text;\n\n  if (\n    extracted.error ||\n    typeof pdfText !== 'string' ||\n    !pdfText.trim()\n  ) {\n    fail(\n      'EXTRACTION_FAILED',\n      'No document text (PDF text extraction failed or the email body was empty)' +\n      (extracted.error ? `: ${errText(extracted.error)}` : '')\n    );\n\n    continue;\n  }\n\n  base.source_text = pdfText;   // used by stage 2 (line items)\n  const srcCents = buildSrcCents(pdfText);\n\n  const parsed = parseLLM(llmItems[i].json);\n\n  if (parsed.error) {\n    fail('EXTRACTION_FAILED', parsed.error);\n    continue;\n  }\n\n  const d = parsed.data || {};\n\n  const docType = normType(d.document_type) || null;\n\n  const shared = {\n    ...base,\n\n    document_type: docType,\n    document_title: d.document_title ?? null,\n\n    vendor: pick(d.vendor, [\n      'name', 'account', 'address', 'city', 'state', 'zip'\n    ]),\n\n    customer: pick(d.customer, [\n      'name', 'account', 'address', 'city', 'state', 'zip'\n    ]),\n\n    ship_to: pick(d.ship_to, [\n      'name', 'street', 'city', 'state', 'zip', 'full_address'\n    ]),\n\n    llm_exceptions: Array.isArray(d.exceptions)\n      ? d.exceptions.map(String)\n      : []\n  };\n\n  // The document type must be one the prompt defines.\n  if (!ALLOWED_DOC_TYPES.includes(docType)) {\n    fail('UNSUPPORTED_DOCUMENT_TYPE', `Unsupported document_type \"${docType ?? 'none'}\" returned by the LLM`, shared);\n    continue;\n  }\n\n  // Not a billing document: never read invoice or statement data from it.\n  if (docType === 'NOT_A_VALID_PDF') {\n    fail('NOT_A_VALID_PDF', 'Not a billing document' + (d.document_title ? ` (title: ${d.document_title})` : ''), shared);\n    continue;\n  }\n\n  // Statements follow their own route, but only when the document itself is a STATEMENT\n  // (or a MIXED document that really carries statement transactions). An INVOICE is never turned into a statement.\n  // A statement may carry copies of its invoices after it: the statement wins and those invoices are ignored.\n  const stObj = d.statement && typeof d.statement === 'object' ? d.statement : null;\n  const stTxCount = Array.isArray(stObj?.transactions) ? stObj.transactions.length : 0;\n  const isStatement = docType === 'STATEMENT' || (docType === 'MIXED' && stTxCount > 0);\n\n  if (isStatement) {\n    if (!stObj) {\n      fail('STATEMENT_INCOMPLETE', 'Classified as STATEMENT but no statement data was returned', shared);\n      continue;\n    }\n    if (!stTxCount) {\n      fail('STATEMENT_INCOMPLETE', 'Statement has no transactions to reconcile', shared);\n      continue;\n    }\n    const stProblems = checkStatementAmounts(stObj, srcCents);\n    if (stProblems.length) {\n      fail('EXTRACTION_FAILED',\n        `Statement amount check failed (${stProblems.length}): ` + stProblems.slice(0, 10).join('; ') + (stProblems.length > 10 ? '; ...' : ''),\n        shared);\n      continue;\n    }\n\n    const stWarnings = [];\n    const ignored = Array.isArray(d.invoices) ? d.invoices.length : 0;\n    if (ignored) stWarnings.push(`${ignored} invoice(s) attached to the statement were ignored`);\n    const statement = normalizeStatement(stObj, stWarnings);\n\n    out.push({\n      json: {\n        ...shared,\n        document_type: 'STATEMENT',\n        warnings: [...(shared.warnings || []), ...stWarnings],\n        statement,\n        route: 'STATEMENT',\n        status: null,\n        reason: null\n      }\n    });\n\n    continue;\n  }\n\n  const invoices = Array.isArray(d.invoices)\n    ? d.invoices\n    : [];\n\n  /*\n   * MIXED does not automatically mean failure.\n   * If the LLM returned individual records, process each one.\n   */\n  if (docType === 'MIXED' && !invoices.length) {\n    fail(\n      'TRIAGE_MIXED',\n      'LLM classified the PDF as MIXED but returned no individual documents',\n      shared\n    );\n\n    continue;\n  }\n\n  if (!invoices.length) {\n    fail(\n      'NO_INVOICE_FOUND',\n      `No invoice found (document_type: ${docType ?? 'unknown'})`,\n      shared\n    );\n\n    continue;\n  }\n\n  const seen = new Set();\n\n  invoices.forEach((inv, k) => {\n    const ctx = buildInvoice(\n      shared,\n      inv,\n      k,\n      invoices.length,\n      docType,\n      srcCents\n    );\n\n    const key =\n      `${ctx.invoice.invoice_number ?? ''}|` +\n      `${ctx.invoice.po_number_raw ?? ''}`;\n\n    if (seen.has(key)) {\n      ctx.warnings.push(\n        'Same invoice/PO appears twice in this PDF'\n      );\n    }\n\n    seen.add(key);\n\n    out.push({ json: ctx });\n  });\n}\n\nreturn out;\n"
+      }
+    },
+    {
+      "id": "2bcaf1fc-1526-4f41-9e05-90737d7e98e9",
+      "name": "Parse Lines (Indirect)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9376,
+        10032
+      ],
+      "parameters": {
+        "jsCode": "// Stage 2: parse the line items for this one invoice and attach them to the context.\nconst CONFIG = { REQUIRE_LINES: false };\nconst ctx = JSON.parse(JSON.stringify($('Restore Routed Ctx').first().json));\nctx.warnings = ctx.warnings || [];\nconst TOL = $('Build Config').first().json.cfg.INV_PROC_CONFIG.validation_tolerance;\nconst resp = $input.first()?.json ?? {};\nconst round2 = n => Math.round(n * 100) / 100;\n\n/*\n * Strict amount parser: accepts JSON numbers and printed amounts (1,234.56  -234.89  (234.89)  234.89-  $1,234.56).\n * Anything else is REJECTED (bad = true), never \"cleaned up\", so a corrupted token such as \"-234.!89!!89\"\n * can no longer become -234.8989.\n */\nconst AMOUNT_RE = /^(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?$|^\\.\\d+$/;\nfunction parseAmount(v) {\n  if (v === null || v === undefined || v === '') return { value: null, bad: false };\n  if (typeof v === 'number') return Number.isFinite(v) ? { value: v, bad: false } : { value: null, bad: true };\n  let s = String(v).trim(), neg = false;\n  if (!s) return { value: null, bad: false };\n  if (/^\\(.*\\)$/.test(s)) { neg = true; s = s.slice(1, -1).trim(); }\n  if (/-$/.test(s)) { neg = true; s = s.slice(0, -1).trim(); }\n  if (/^[-\\u2212\\u2013]/.test(s)) { neg = true; s = s.slice(1).trim(); }\n  s = s.replace(/^[$\\u20AC\\u00A3]\\s*/, '');\n  if (!AMOUNT_RE.test(s)) return { value: null, bad: true };\n  const n = Number(s.replace(/,/g, ''));\n  return Number.isFinite(n) ? { value: neg ? -n : n, bad: false } : { value: null, bad: true };\n}\nfunction buildSrcCents(text) {\n  const set = new Set();\n  const add = s => { const n = Number(s); if (Number.isFinite(n)) set.add(Math.round(n * 100)); };\n  for (const t of String(text).match(/\\d[\\d,]*(?:\\.\\d+)?|\\.\\d+/g) || []) {\n    add(t.replace(/,/g, ''));\n    // PDF text extraction can glue two numbers together (quantity 3 + price 149.99 -> 3149.99).\n    // For a decimal token with no thousands separators and 4+ integer digits, also accept its trailing digit groups.\n    const m = t.match(/^(\\d{4,})(\\.\\d+)$/);\n    if (m) for (let i = 1; i < m[1].length; i++) add(m[1].slice(i) + m[2]);\n  }\n  return set;\n}\nconst srcCents = buildSrcCents(ctx.source_text || '');\nlet badAmounts = 0;\nconst num = v => { const r = parseAmount(v); if (r.bad) badAmounts++; return r.value; };\n// Prices and amounts must also appear in the document text.\nconst amt = v => {\n  const r = parseAmount(v);\n  if (r.bad) { badAmounts++; return null; }\n  if (r.value !== null && r.value !== 0 && !srcCents.has(Math.round(Math.abs(r.value) * 100))) badAmounts++;\n  return r.value;\n};\nfunction parse(r) {\n  if (!r || r.error) return { error: 'Line-item LLM request failed' + (r?.error ? ': ' + (r.error.message || JSON.stringify(r.error)) : '') };\n  const ch = r.choices?.[0];\n  if (ch?.finish_reason === 'length') return { error: 'Line-item output truncated (finish_reason=length); raise glm_lines_max_tokens' };\n  if (ch?.finish_reason !== undefined && ch?.finish_reason !== null && ch.finish_reason !== 'stop') return { error: `Line-item LLM did not finish normally (finish_reason=${ch.finish_reason})` };\n  const raw = ch?.message?.content;\n  if (!raw) return { error: 'Line-item LLM returned empty content' };\n  const cleaned = String(raw).replace(/^```(?:json)?\\s*/i, '').replace(/\\s*```\\s*$/, '').trim();\n  try { return { data: JSON.parse(cleaned) }; } catch (e) {\n    const a = cleaned.indexOf('{'), b = cleaned.lastIndexOf('}');\n    if (a >= 0 && b > a) { try { return { data: JSON.parse(cleaned.slice(a, b + 1)) }; } catch (e2) {} }\n    return { error: 'Could not parse line-item JSON: ' + e.message };\n  }\n}\nconst p = parse(resp);\nif (p.error) {\n  ctx.line_count = 0;\n  if (CONFIG.REQUIRE_LINES) { ctx.status = 'EXTRACTION_FAILED'; ctx.reason = p.error; }\n  else ctx.warnings.push(p.error + ' (continuing without line items)');\n  return [{ json: ctx }];\n}\nconst lines = (Array.isArray(p.data?.line_items) ? p.data.line_items : [])\n  .map(li => ({ sku: li?.sku ?? null, description: li?.description ?? null, quantity: num(li?.quantity), unit_price: amt(li?.unit_price), amount: amt(li?.amount) }))\n  .filter(l => l.sku || l.description || l.amount !== null);\nconst inv = ctx.invoice;\nif (badAmounts) {\n  inv.line_items = [];\n  ctx.line_count = 0;\n  const msg = `${badAmounts} line amount(s) unreadable or not in the document; line items discarded`;\n  if (CONFIG.REQUIRE_LINES) { ctx.status = 'EXTRACTION_FAILED'; ctx.reason = msg; }\n  else ctx.warnings.push(msg);\n  return [{ json: ctx }];\n}\ninv.line_items = lines;\nctx.line_count = lines.length;\nfor (const l of lines) {\n  if (l.quantity !== null && l.unit_price !== null && l.amount !== null && Math.abs(round2(l.quantity * l.unit_price) - l.amount) > TOL)\n    ctx.warnings.push(`Line ${l.sku ?? l.description}: qty x price != amount`);\n}\nconst priced = lines.filter(l => l.amount !== null);\nconst lineSum = round2(priced.reduce((s, l) => s + l.amount, 0));\nif (priced.length && inv.subtotal !== null && inv.subtotal !== undefined &&\n    Math.abs(lineSum - inv.subtotal) > TOL && Math.abs(lineSum + (inv.freight ?? 0) - inv.subtotal) > TOL)\n  ctx.warnings.push(`Line items sum ${lineSum} != subtotal ${inv.subtotal}`);\nif (!lines.length) {\n  if (CONFIG.REQUIRE_LINES) { ctx.status = 'EXTRACTION_FAILED'; ctx.reason = `No line items found for invoice ${inv.invoice_number}`; }\n  else ctx.warnings.push('No line items found');\n}\nreturn [{ json: ctx }];\n"
+      }
+    },
+    {
+      "id": "851d65bb-43a8-4fd2-9304-51fd3b91bfcd",
+      "name": "Posted?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        11168,
+        9808
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "361458ef-0917-4d55-9988-d3b917392240",
+              "leftValue": "={{ $json.status === 'POSTED' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "75bd69bf-ab50-4384-b86a-48b602a2a2a2",
+      "name": "Prep Docs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4896,
+        10096
+      ],
+      "parameters": {
+        "jsCode": "// One document per item: the PDF's text, or the email body when there is no PDF.\n// (Has Invoice Content? true-branch items line up 1:1 with Extract from File items.)\nconst src = $('Has Invoice Content?').all(0);\nreturn $input.all().map((it, i) => {\n  const m = src[i]?.json ?? {};\n  const isPdf = m.has_pdf === true;\n  return { json: {\n    text: isPdf ? (it.json.text ?? '') : (m.body_text ?? ''),\n    numpages: isPdf ? (it.json.numpages ?? null) : null,\n    error: isPdf ? it.json.error : undefined,\n    source: isPdf ? 'PDF' : 'EMAIL_BODY',\n    __meta: m,\n  } };\n});\n"
+      }
+    },
+    {
+      "id": "aabbb632-51ec-45fd-ba80-6788e33a5ae7",
+      "name": "Ready to Post?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        10496,
+        9904
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ae34e281-691e-4df6-92ad-1d34b5ef45da",
+              "leftValue": "={{ $json.status === 'READY_TO_POST' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "7b07eaec-d889-4ee8-acd0-18ffc622f7fa",
+      "name": "Report: Matched",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        10048,
+        9904
+      ],
+      "parameters": {
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "value": "YQpLj9gtvsYErCBh",
+          "mode": "list",
+          "cachedResultName": "New Business Processing Datatable",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/YQpLj9gtvsYErCBh"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "keyValue": "={{ $json.tracking_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "processing_status": "={{ $json.status ?? '' }}",
+            "invoice_number": "={{ $json.invoice?.invoice_number ?? '' }}",
+            "st_po_number": "={{ $json.st_po?.number ?? '' }}",
+            "st_po_id": "={{ $json.st_po?.id != null ? String($json.st_po.id) : '' }}",
+            "st_po_status": "={{ $json.st_po ? ($json.st_po.status ?? 'FOUND') : ($json.lane === 'DIRECT' ? ($json.status ?? '') : '') }}",
+            "line_count": "={{ $json.line_count ?? ($json.invoice?.line_items || []).length }}",
+            "invoice_vendor_mismatch": "={{ $json.match_checks?.vendor?.result ?? '' }}",
+            "invoice_location_mismatch": "={{ $json.match_checks?.location?.result ?? ($json.location?.status === 'RESOLVED' ? 'PASS' : '') }}",
+            "invoice_qty_mismatch": "={{ $json.match_checks?.quantity?.result ?? '' }}",
+            "invoice_price_mismatch": "={{ $json.match_checks?.total?.result ?? '' }}",
+            "variance_amount": "={{ $json.variance_amount ?? null }}",
+            "match_details": "={{ $json.match_checks ? Object.entries($json.match_checks).map(([k, v]) => k + ': ' + v.result + (v.detail ? ' (' + v.detail + ')' : '')).join(' | ').slice(0, 2000) : ($json.reason ?? '') }}",
+            "account_number_match": "={{ $json.account_match?.result ?? '' }}",
+            "gl_code": "={{ $json.payload?.lines?.[0]?.gl_account ?? $json.gl?.account ?? '' }}",
+            "warnings": "={{ ($json.warnings || []).join('; ').slice(0, 2000) }}",
+            "lane": "={{ $json.lane ?? '' }}",
+            "location_id": "={{ $json.location?.entity_id ?? '' }}",
+            "location_name": "={{ $json.location?.code ? $json.location.code + ' / ' + ($json.location.name ?? $json.location.entity_id ?? '') : '' }}",
+            "location_method": "={{ $json.location?.method_detail ?? $json.location?.method ?? $json.location?.status ?? '' }}",
+            "total_amount": "={{ $json.payload?.lines?.[0]?.amount != null ? String($json.payload.lines[0].amount) : ($json.invoice?.invoice_total != null ? String($json.invoice.invoice_total) : '') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "processing_status",
+              "displayName": "processing_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "invoice_number",
+              "displayName": "invoice_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "st_po_number",
+              "displayName": "st_po_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "st_po_id",
+              "displayName": "st_po_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "st_po_status",
+              "displayName": "st_po_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "line_count",
+              "displayName": "line_count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "invoice_vendor_mismatch",
+              "displayName": "invoice_vendor_mismatch",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "invoice_location_mismatch",
+              "displayName": "invoice_location_mismatch",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "invoice_qty_mismatch",
+              "displayName": "invoice_qty_mismatch",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "invoice_price_mismatch",
+              "displayName": "invoice_price_mismatch",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "variance_amount",
+              "displayName": "variance_amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "match_details",
+              "displayName": "match_details",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "account_number_match",
+              "displayName": "account_number_match",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "gl_code",
+              "displayName": "gl_code",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "warnings",
+              "displayName": "warnings",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "lane",
+              "displayName": "lane",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "location_id",
+              "displayName": "location_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "location_name",
+              "displayName": "location_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "location_method",
+              "displayName": "location_method",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "total_amount",
+              "displayName": "total_amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "b56cea1c-49dc-44b8-8413-bd38f2af5c0b",
+      "name": "Report: Routed",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        8480,
+        10096
+      ],
+      "parameters": {
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "value": "YQpLj9gtvsYErCBh",
+          "mode": "list",
+          "cachedResultName": "New Business Processing Datatable",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/YQpLj9gtvsYErCBh"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "keyValue": "={{ $json.tracking_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "processing_status": "={{ $json.route === 'EXCEPTION' ? 'CLASSIFIED' : 'ROUTED_' + $json.route }}",
+            "lane": "={{ $json.lane ?? $json.route ?? '' }}",
+            "po_number": "={{ $json.po?.normalized ?? $json.invoice?.po_number_raw ?? '' }}",
+            "location_id": "={{ $json.location?.entity_id ?? '' }}",
+            "location_name": "={{ $json.location?.code ? $json.location.code + ' / ' + ($json.location.name ?? $json.location.entity_id ?? '') : '' }}",
+            "location_method": "={{ $json.location?.method_detail ?? $json.location?.method ?? $json.location?.status ?? '' }}",
+            "invoice_location_mismatch": "={{ $json.status === 'LOCATION_CONFLICT' ? 'FAIL' : ($json.location?.status === 'RESOLVED' ? 'PASS' : '') }}",
+            "warnings": "={{ ($json.warnings || []).join('; ').slice(0, 2000) }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "processing_status",
+              "displayName": "processing_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "lane",
+              "displayName": "lane",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "po_number",
+              "displayName": "po_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "location_id",
+              "displayName": "location_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "location_name",
+              "displayName": "location_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "location_method",
+              "displayName": "location_method",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "invoice_location_mismatch",
+              "displayName": "invoice_location_mismatch",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "warnings",
+              "displayName": "warnings",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "89670cac-4ce9-40cb-8d9b-0bc0fadfe0f9",
+      "name": "Resolve Location",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7312,
+        10128
+      ],
+      "parameters": {
+        "jsCode": "// Deterministic location resolver: PO suffix regex, ship-to, service address.\n// Location data (codes, aliases, entities, ST tenant, active flag) comes from the Location_Master data table.\n// Only the resolver's rules come from summers.datastore.config.keys (LOCATION_CONFIG).\nconst L = $('Build Config').first().json.cfg.LOCATION_CONFIG;\nconst CONFIG = {\n  LOC_COLS: { code: 'location_code', aliases: 'code_aliases', active: 'active', entity: 'sage_entity_id',\n              sageLocation: 'sage_location_id', name: 'location_name', city: 'city', zip: 'zip', tenant: 'st_tenant_id' },\n  CONFLICT_POLICY: L.conflict_policy,   // 'strict': any disagreement is an exception. 'po_wins': PO suffix overrides (flagged for review).\n  ENABLE_LLM_FALLBACK: L.enable_llm_fallback === true,\n};\n\nconst ctx = $json;\nif (ctx.route) return [{ json: ctx }];   // already routed (exception or statement)\n\nconst up = v => String(v ?? '').trim().toUpperCase();\nconst lc = v => String(v ?? '').trim().toLowerCase();\nconst zip5 = v => (String(v ?? '').match(/\\b(\\d{5})(?:-\\d{4})?\\b/) || [])[1] || null;\nconst reEsc = s => s.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');\nconst C = CONFIG.LOC_COLS;\n\nconst locRows = $('Load Location Master').all().map(i => i.json).filter(r => r && Object.keys(r).length && !r.error);\n\nconst splitCodes = v => up(v).split(/[\\s,\\/;|]+/).filter(Boolean);\nconst LOCATION_CODES = [...new Set(locRows.flatMap(r => splitCodes(r[C.code])))];\nconst CODE_ALIASES = {};\nfor (const r of locRows) { const main = splitCodes(r[C.code])[0]; if (main) for (const a of splitCodes(r[C.aliases])) CODE_ALIASES[a] = main; }\nconst toCode = tok => CODE_ALIASES[tok] || (LOCATION_CODES.includes(tok) ? tok : null);\nconst rowCodes = r => up(r[C.code]).split(/[\\s,\\/;|]+/).map(toCode).filter(Boolean);\nconst byCode = {};\nfor (const r of locRows) for (const c of rowCodes(r)) if (!byCode[c]) byCode[c] = r;\nconst codeForRow = r => rowCodes(r)[0] || null;\nfunction info(code) {\n  const r = byCode[code] || {};\n  const entity = r[C.entity] ? String(r[C.entity]).trim() : null;\n  return {\n    entity_id: entity,\n    sage_location_id: r[C.sageLocation] ? String(r[C.sageLocation]).trim() : entity,\n    name: r[C.name] ?? entity ?? code,\n    st_tenant_id: r[C.tenant] ? String(r[C.tenant]).trim() : null,\n    active: r[C.active] === true,\n  };\n}\n\n// ---- PO normalize (also gives the ServiceTitan search number) ----\nconst poRaw = ctx.invoice?.po_number_raw || '';\nconst poNorm = up(poRaw).replace(/\\s+/g, '');\n// Any printed PO goes to ServiceTitan. Numeric POs are normalized (base-NNN); other POs (e.g. \"JOHN MOODY\") are searched as printed.\nconst poNumeric = /^\\d{6,}/.test(poNorm);\nconst poValid = !!poNorm;\nlet stSearch = poValid && !poNumeric ? String(poRaw).trim().replace(/\\s+/g, ' ') : null;\nif (poNumeric) {\n  const base = poNorm.match(/^\\d+/)[0];\n  const sub = poNorm.slice(base.length).match(/^-(\\d{1,3})/);\n  stSearch = sub ? `${base}-${String(parseInt(sub[1], 10)).padStart(3, '0')}` : base;\n}\nctx.po = { raw: poRaw || null, normalized: poNorm || null, valid: poValid, numeric: poNumeric, st_search_number: stSearch };\n\nconst candidates = [];\n\n// 1. PO suffix: digits, optional -NNN, then the 2-3 letter location token.\nif (poNumeric) {\n  const m = poNorm.match(/^\\d{6,}(?:-\\d{0,3})?([A-Z]{2,3})/);\n  if (m) {\n    const tok = m[1];\n    const code = toCode(tok) || (tok.length === 3 ? toCode(tok.slice(0, 2)) : null);\n    if (code) candidates.push({ source: 'PO_SUFFIX', code, evidence: tok });\n  }\n}\n\n// 2/3. Ship-to is always evaluated (so a PO suffix that disagrees with it is caught by the conflict policy): use the CITY, ZIP only if no city.\n// The service address is only a fallback when nothing else produced a candidate.\nconst normPlace = v => lc(v).replace(/\\b(summers|of|plumbing|heating|cooling|and|phc|inc|llc)\\b|&/g, ' ')\n  .replace(/\\bfort\\b/g, 'ft').replace(/\\bsaint\\b/g, 'st').replace(/[^a-z0-9]/g, '');\nconst placeRow = v => { const n = normPlace(v); return n ? locRows.find(r => [r[C.city], r[C.entity], r[C.name]].some(x => normPlace(x) === n)) : null; };\nfunction matchAddress(source, city, text) {\n  let hit = placeRow(city), how = hit ? `city ${city}` : null;\n  if (!hit && !city) {\n    const z = zip5(text);\n    hit = z ? locRows.find(r => zip5(r[C.zip]) === z) : null;\n    how = hit ? `zip ${z}` : null;\n  }\n  if (!hit && !city && text) {\n    const t = ' ' + lc(text).replace(/[^a-z0-9]+/g, ' ') + ' ';\n    hit = locRows.find(r => [r[C.city], r[C.entity]].some(x => { const c = lc(x).replace(/[^a-z0-9]+/g, ' ').trim(); return c && t.includes(` ${c} `); }));\n    how = 'city in address text';\n  }\n  const code = hit ? codeForRow(hit) : null;\n  if (code) candidates.push({ source, code, evidence: how });\n  return code;\n}\nconst st = ctx.ship_to || {};\nif (st.city || st.zip || st.full_address) {\n  matchAddress('SHIP_TO', st.city, [st.full_address, st.street, st.city, st.state, st.zip].filter(Boolean).join(' '));\n}\nconst svc = ctx.invoice?.service_address || '';\nif (svc && !candidates.length) matchAddress('SERVICE_ADDRESS', null, svc);\n\n// ---- Decide ----\nconst codes = [...new Set(candidates.map(c => c.code))];\nconst loc = { status: 'NONE', code: null, entity_id: null, sage_location_id: null, name: null,\n              st_tenant_id: null, active: false, method: null, needs_review: false, candidates, allow_fallback: false };\nconst apply = (code, method) => Object.assign(loc, { status: 'RESOLVED', code, method, ...info(code) });\n\nif (codes.length === 1) {\n  apply(codes[0], candidates.map(c => c.source).join('+'));\n} else if (codes.length > 1) {\n  const po = candidates.find(c => c.source === 'PO_SUFFIX');\n  if (CONFIG.CONFLICT_POLICY === 'po_wins' && po) {\n    apply(po.code, 'PO_SUFFIX (override)');\n    loc.needs_review = true;\n    ctx.warnings.push('Location sources disagree; PO suffix used: ' + candidates.map(c => `${c.source}=${c.code}`).join(', '));\n  } else {\n    loc.status = 'CONFLICT';\n    loc.method = candidates.map(c => `${c.source}=${c.code} (${c.evidence})`).join(', ');\n  }\n} else if (CONFIG.ENABLE_LLM_FALLBACK && Object.keys(byCode).length) {\n  loc.allow_fallback = true;\n  loc.options = Object.fromEntries(Object.keys(byCode).map(c => [c, info(c)]));\n  const list = Object.entries(byCode).map(([c, r]) => `${c}: ${[r[C.name] ?? r[C.entity], r[C.city], r[C.zip]].filter(Boolean).join(', ')}`).join('\\n');\n  const shipTo = st.full_address || [st.street, st.city, st.state, st.zip].filter(Boolean).join(', ') || 'n/a';\n  loc.fallback_prompt =\n    `Pick the Summers PHC branch this vendor invoice belongs to, using only the evidence below.\\n\\nBranches:\\n${list}\\n\\n` +\n    `Ship-to: ${shipTo}\\nService address: ${svc || 'n/a'}\\nPO number: ${poRaw || 'n/a'}\\n` +\n    `Email subject: ${ctx.subject || 'n/a'}\\nFile name: ${ctx.file_name || 'n/a'}\\n\\n` +\n    `Answer with ONLY the two-letter branch code, or NONE if the evidence does not clearly point to one branch.`;\n}\n// Plain-English \"how the location was found\", for the Daily Report.\nconst LABEL = { PO_SUFFIX: 'PO Number', SHIP_TO: 'Ship To', SERVICE_ADDRESS: 'Service Address' };\nloc.method_detail = candidates.length\n  ? candidates.map(c => `${LABEL[c.source] || c.source} (${c.source === 'PO_SUFFIX' ? `\"${poRaw}\"` : c.evidence}) = ${c.code}`).join('; ')\n  : null;\nctx.location = loc;\nreturn [{ json: ctx }];"
+      }
+    },
+    {
+      "id": "30b417e8-7520-46c8-b3e0-cf324c2e408f",
+      "name": "Restore Attachments",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4224,
+        10096
+      ],
+      "parameters": {
+        "jsCode": "// Config is loaded; continue with the attachment / email-body items (binary data included).\nreturn $('Extract PDFs').all();\n"
+      }
+    },
+    {
+      "id": "565eead5-4be8-4820-9976-8c0949355c19",
+      "name": "Restore Invoices",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6032,
+        10096
+      ],
+      "parameters": {
+        "jsCode": "// The two sheet loads above ran once; continue with the invoice items.\nreturn $('Parse & Validate').all();\n"
+      }
+    },
+    {
+      "id": "9a79900e-d8bd-4e6a-b46f-2b0c0348e265",
+      "name": "Restore Lane Ctx",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10272,
+        9904
+      ],
+      "parameters": {
+        "jsCode": "return [{ json: $('Normalize Lane Result').first().json }];\n"
+      }
+    },
+    {
+      "id": "0f5f8943-6321-4bfe-a08a-47ec8aedbace",
+      "name": "Restore Routed Ctx",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8704,
+        10096
+      ],
+      "parameters": {
+        "jsCode": "// The data table update returns the row; continue with the invoice context.\nreturn [{ json: $('Classify Lane').first().json }];\n"
+      }
+    },
+    {
+      "id": "8824cf33-96b5-4726-9622-9e7e0d1750e6",
+      "name": "Route",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        8928,
+        10032
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "8cf2556c-fadc-4aed-a2ee-6c258614a9c0",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "DIRECT",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "DIRECT"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "f600bef8-acd8-438b-ad9e-3ba0b081051c",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "INDIRECT",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "INDIRECT"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "43a5f5ab-853b-4d59-baf8-950927a3a339",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "STATEMENT",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "STATEMENT"
+            }
+          ]
+        },
+        "looseTypeValidation": true,
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      }
+    },
+    {
+      "id": "079a0dd2-0489-48cd-b3d5-774fc3f781a8",
+      "name": "Run Direct (PO)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        9184,
+        9776
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "koP058FMmqYx6kQu",
+          "mode": "id",
+          "cachedResultUrl": "/workflow/koP058FMmqYx6kQu"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "f7800eac-af45-4db9-a588-d4b9c025b49c",
+      "name": "Run Exception Handler",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        11392,
+        10144
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "0d6YrZX8QbpSFusc",
+          "mode": "id",
+          "cachedResultUrl": "/workflow/0d6YrZX8QbpSFusc"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "150ca127-4174-4753-bbe1-c89e79042596",
+      "name": "Run Indirect (Non-PO)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        9600,
+        10032
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "VpZFxjCV8mSgmaIX",
+          "mode": "id",
+          "cachedResultUrl": "/workflow/VpZFxjCV8mSgmaIX"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "8e7c1103-dc53-4d0f-bc65-1cd37f238b51",
+      "name": "Run Sage Post",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        10720,
+        9808
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "WAlFIGEZV2sQzErj",
+          "mode": "id",
+          "cachedResultUrl": "/workflow/WAlFIGEZV2sQzErj"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "disabled": true,
+      "notesInFlow": true,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "3ae6c1bf-e490-4c55-8b05-b58e0c183934",
+      "name": "Run Statement Flow",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        9152,
+        10336
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "a7ZNcf15nj1AnDv5",
+          "mode": "id",
+          "cachedResultUrl": "/workflow/a7ZNcf15nj1AnDv5"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "f688af62-0700-4de8-8adc-1972e988a7f6",
+      "name": "Skip Seen Messages",
+      "type": "n8n-nodes-base.removeDuplicates",
+      "typeVersion": 2,
+      "position": [
+        3312,
+        10096
+      ],
+      "parameters": {
+        "operation": "removeItemsSeenInPreviousExecutions",
+        "dedupeValue": "={{ $json.id }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "490a5868-00a3-4437-bf22-55567bd6d24d",
+      "name": "Statement Reconciled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        9600,
+        10336
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b7edb2be-6e20-4dd0-a7f3-72bcabc15507",
+              "leftValue": "={{ ['RECONCILED', 'STATEMENT_DISCREPANCIES'].includes($json.status) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Apply Fallback": {
+      "main": [
+        [
+          {
+            "node": "Classify Lane",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Config": {
+      "main": [
+        [
+          {
+            "node": "Restore Attachments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Context": {
+      "main": [
+        [
+          {
+            "node": "Resolve Location",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Posted Duplicate": {
+      "main": [
+        [
+          {
+            "node": "Build Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Lane": {
+      "main": [
+        [
+          {
+            "node": "Report: Routed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File": {
+      "main": [
+        [
+          {
+            "node": "Prep Docs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Header (GLM)": {
+      "main": [
+        [
+          {
+            "node": "Parse & Validate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Lines (Indirect)": {
+      "main": [
+        [
+          {
+            "node": "Parse Lines (Indirect)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract PDFs": {
+      "main": [
+        [
+          {
+            "node": "Load Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "Skip Seen Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Invoice Content?": {
+      "main": [
+        [
+          {
+            "node": "Extract from File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Load Location Master",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Tracking Row": {
+      "main": [
+        [
+          {
+            "node": "Check Posted Duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM Location Fallback1": {
+      "main": [
+        [
+          {
+            "node": "Apply Fallback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Config": {
+      "main": [
+        [
+          {
+            "node": "Build Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Location Master": {
+      "main": [
+        [
+          {
+            "node": "Restore Invoices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Invoices": {
+      "main": [
+        [
+          {
+            "node": "Done",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Insert Tracking Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Posted": {
+      "main": [
+        [
+          {
+            "node": "Loop Invoices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Statement Routed": {
+      "main": [
+        [
+          {
+            "node": "Loop Invoices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs Location Fallback?": {
+      "main": [
+        [
+          {
+            "node": "LLM Location Fallback1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Classify Lane",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Lane Result": {
+      "main": [
+        [
+          {
+            "node": "Report: Matched",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Post Result": {
+      "main": [
+        [
+          {
+            "node": "Posted?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Statement Result": {
+      "main": [
+        [
+          {
+            "node": "Statement Reconciled?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Outlook: AP Inbox": {
+      "main": [
+        [
+          {
+            "node": "Skip Seen Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse & Validate": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Lines (Indirect)": {
+      "main": [
+        [
+          {
+            "node": "Run Indirect (Non-PO)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Posted?": {
+      "main": [
+        [
+          {
+            "node": "Mark Posted",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Run Exception Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prep Docs": {
+      "main": [
+        [
+          {
+            "node": "Extract Header (GLM)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ready to Post?": {
+      "main": [
+        [
+          {
+            "node": "Run Sage Post",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Run Exception Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report: Matched": {
+      "main": [
+        [
+          {
+            "node": "Restore Lane Ctx",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report: Routed": {
+      "main": [
+        [
+          {
+            "node": "Restore Routed Ctx",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Location": {
+      "main": [
+        [
+          {
+            "node": "Needs Location Fallback?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore Attachments": {
+      "main": [
+        [
+          {
+            "node": "Has Invoice Content?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore Invoices": {
+      "main": [
+        [
+          {
+            "node": "Loop Invoices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore Lane Ctx": {
+      "main": [
+        [
+          {
+            "node": "Ready to Post?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore Routed Ctx": {
+      "main": [
+        [
+          {
+            "node": "Route",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route": {
+      "main": [
+        [
+          {
+            "node": "Run Direct (PO)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Extract Lines (Indirect)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Run Statement Flow",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Run Exception Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Direct (PO)": {
+      "main": [
+        [
+          {
+            "node": "Normalize Lane Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Exception Handler": {
+      "main": [
+        [
+          {
+            "node": "Loop Invoices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Indirect (Non-PO)": {
+      "main": [
+        [
+          {
+            "node": "Normalize Lane Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Sage Post": {
+      "main": [
+        [
+          {
+            "node": "Normalize Post Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Statement Flow": {
+      "main": [
+        [
+          {
+            "node": "Normalize Statement Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip Seen Messages": {
+      "main": [
+        [
+          {
+            "node": "Extract PDFs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Statement Reconciled?": {
+      "main": [
+        [
+          {
+            "node": "Mark Statement Routed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Run Exception Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "tags": [
+    "AP Automation",
+    "Main Flow"
+  ]
+}
