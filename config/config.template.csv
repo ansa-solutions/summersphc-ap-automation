@@ -1,0 +1,60 @@
+category,key,value
+GLOBAL_CONFIG,extraction_endpoint,https://api.z.ai/api/paas/v4/chat/completions
+GLOBAL_CONFIG,glm_extraction_model,GLM-4.6
+GLOBAL_CONFIG,glm_fallback_model,GLM-4.7-Flash
+GLOBAL_CONFIG,glm_header_max_tokens,32768
+GLOBAL_CONFIG,glm_lines_max_tokens,8192
+GLOBAL_CONFIG,glm_fallback_max_tokens,20
+GLOBAL_CONFIG,st_api_base,https://api.servicetitan.io
+GLOBAL_CONFIG,st_auth_url,https://auth.servicetitan.io/connect/token
+GLOBAL_CONFIG,sage_gateway_url,<sage xml gateway url>
+GLOBAL_CONFIG,doppler_secrets_url,<doppler secrets download url>
+GLOBAL_CONFIG,ap_inbox,<ap inbox address>
+GLOBAL_CONFIG,currency,USD
+GLOBAL_CONFIG,environment,PRODUCTION
+INV_PROC_CONFIG,validation_tolerance,0.02
+INV_PROC_CONFIG,line_price_tolerance,0.01
+INV_PROC_CONFIG,allow_st_price_update,false
+INV_PROC_CONFIG,vendor_match_stopwords,"[""supply"",""supplies"",""and"",""of"",""distribution"",""distributors"",""wholesale"",""group""]"
+INV_PROC_CONFIG,sage_send_termname,false
+INV_PROC_CONFIG,sage_search_page_size,100
+INV_PROC_CONFIG,email_body_min_chars,150
+INV_PROC_CONFIG,indirect_require_confirmed_map,false
+INV_PROC_CONFIG,indirect_amount_basis,current_charges
+LOCATION_CONFIG,conflict_policy,strict
+LOCATION_CONFIG,enable_llm_fallback,true
+ROUTING_CONFIG,advertising_patterns,"[""\\bgoogle ads\\b"",""\\bmeta\\b"",""\\bfacebook\\b"",""\\bmicrosoft advertising\\b"",""\\blinkedin\\b"",""\\bseo\\b"",""\\bppc\\b"",""\\bdigital marketing\\b"",""\\bmarketing\\b"",""\\badvertis""]"
+ROUTING_CONFIG,utility_patterns,"[""\\bdelivery charges?\\b"",""\\bsupply charges?\\b"",""\\busage\\b"",""\\btherms?\\b"",""\\bkwh\\b"",""\\bgallons?\\b"",""\\bmeter\\b"",""\\bgas service\\b"",""\\belectric service\\b"",""\\bwater service\\b"",""\\bsewer\\b"",""\\butility\\b"",""\\binternet\\b"",""\\btelecom\\b"",""\\bwaste\\b"",""\\btrash\\b"",""\\brefuse\\b""]"
+STMT_RECON_CONFIG,tolerance_dollars,0.02
+STMT_RECON_CONFIG,lookback_days,45
+STMT_RECON_CONFIG,default_window_days,180
+STMT_RECON_CONFIG,suffix_match_min,5
+STMT_RECON_CONFIG,sage_page_size,2000
+STMT_RECON_CONFIG,vendor_search_page_size,100
+STMT_RECON_CONFIG,max_vendor_ids,500
+EMAIL_CONFIG,statement_notify_to,<reviewer email>
+EMAIL_CONFIG,exception_notify_to,<exceptions email>
+EMAIL_CONFIG,error_notify_to,<alerts email>
+EMAIL_CONFIG,CC_to,<optional cc list>
+EMAIL_CONFIG,notify_on_reconciled,false
+EMAIL_CONFIG,silent_statuses,"[""DUPLICATE""]"
+EMAIL_CONFIG,internal_domains,"[""<client domain>""]"
+EMAIL_CONFIG,vendor_draft_enabled,true
+EMAIL_CONFIG,signature_team,Accounts Payable
+EMAIL_CONFIG,signature_company,<client company name>
+SHEET_SYNC_CONFIG,spreadsheet_id,<google sheet id>
+SHEET_SYNC_CONFIG,location_tab_gid,<tab gid>
+SHEET_SYNC_CONFIG,department_tab_gid,<tab gid>
+SHEET_SYNC_CONFIG,vendor_map_tab_gid,<tab gid>
+SHEET_SYNC_CONFIG,vendor_map_header_row,3
+SHEET_SYNC_CONFIG,delete_missing_rows,true
+SHEET_SYNC_CONFIG,max_delete_ratio,0.5
+SHEET_SYNC_CONFIG,dry_run,true
+GITHUB_CONFIG,owner,ansa-solutions
+GITHUB_CONFIG,repo,summersphc-ap-automation
+GITHUB_CONFIG,branch,main
+GITHUB_CONFIG,workflows_path,workflows
+GITHUB_CONFIG,tag_filter,AP Automation
+GITHUB_CONFIG,exclude_tags,"[""Test""]"
+GITHUB_CONFIG,block_on_sensitive,true
+GITHUB_CONFIG,allowed_email_domains,[]

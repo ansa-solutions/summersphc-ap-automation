@@ -1,0 +1,9 @@
+# Never commit secrets, local exports with run data, or reference data
+.env
+*.env
+credentials*.json
+*executions*.json
+datatables/
+*.csv
+!config/config.template.csv
+.DS_Store
