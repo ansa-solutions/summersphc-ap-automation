@@ -1,0 +1,929 @@
+{
+  "id": "0d6YrZX8QbpSFusc",
+  "name": "ANSA | 05. Exception Handler",
+  "nodes": [
+    {
+      "id": "3a8afd1c-23f5-47d1-89c1-c49bca68dfdf",
+      "name": "Build Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1472,
+        880
+      ],
+      "parameters": {
+        "jsCode": "// Settings come from the summers.datastore.config.keys data table: { CATEGORY: { key: value } }.\nconst parse = v => {\n  if (v === null || v === undefined) return null;\n  const s = String(v).trim();\n  if (/^(true|false)$/i.test(s)) return s.toLowerCase() === 'true';\n  if (/^-?\\d+(\\.\\d+)?$/.test(s)) return Number(s);\n  if (/^[\\[{]/.test(s)) { try { return JSON.parse(s); } catch (e) { /* keep as text */ } }\n  return s;\n};\nconst cfg = {};\nfor (const { json: r } of $input.all()) {\n  if (!r || !r.category || !r.key) continue;\n  (cfg[r.category] ||= {})[r.key] = parse(r.value);\n}\n// Fail loudly if a required setting is missing, rather than running with a guess.\nconst REQUIRED = [\"EMAIL_CONFIG.exception_notify_to\", \"EMAIL_CONFIG.silent_statuses\"];\nconst missing = REQUIRED.filter(p => { const [c, k] = p.split('.'); const v = cfg[c]?.[k]; return v === undefined || v === null || v === ''; });\nif (missing.length) throw new Error('Missing settings in summers.datastore.config.keys: ' + missing.join(', '));\nreturn [{ json: { cfg } }];\n"
+      }
+    },
+    {
+      "id": "4a98bb05-9f87-4e44-a3c8-56973db853e6",
+      "name": "Email Reviewer",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        -352,
+        768
+      ],
+      "parameters": {
+        "sendTo": "={{ $('Format Exception').first().json.notify_to }}",
+        "subject": "={{ $('Format Exception').first().json.email_subject }}",
+        "message": "={{ $('Format Exception').first().json.email_html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "v7zEv46gaNt0IQpa",
+          "name": "Gmail account 2"
+        }
+      },
+      "disabled": true,
+      "onError": "continueRegularOutput",
+      "webhookId": "db4cb9cc-0801-4194-8308-c0b8b677f59b"
+    },
+    {
+      "id": "ed201e4d-f278-49f6-8a24-9f026092b111",
+      "name": "Format Exception",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1248,
+        880
+      ],
+      "parameters": {
+        "jsCode": "// ===== CONFIG =====\nconst E = $('Build Config').first().json.cfg.EMAIL_CONFIG;\nconst CONFIG = {\n  NOTIFY_TO: E.exception_notify_to,\n  SILENT_STATUSES: Array.isArray(E.silent_statuses) ? E.silent_statuses : [E.silent_statuses],   // logged, no email\n};\nconst ctx = $('Start').first().json;\nconst status = ctx.status || 'EXCEPTION';\nconst category = status === 'DUPLICATE' ? 'DUPLICATE' : status === 'POST_FAILED' ? 'POST_FAILED' : 'EXCEPTION';\nconst inv = ctx.invoice || {};\nconst esc = v => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst rows = [\n  ['Status', status], ['Reason', ctx.reason], ['Vendor', ctx.vendor?.name], ['Invoice #', inv.invoice_number],\n  ['Invoice date', inv.invoice_date], ['PO', ctx.po?.raw || inv.po_number_raw], ['Account #', inv.account_number],\n  ['Total', inv.invoice_total],\n  ['Location', ctx.location?.code ? `${ctx.location.code} (${ctx.location.entity_id ?? '?'}) via ${ctx.location.method}` : ctx.location?.status],\n  ['Lane', ctx.lane], ['File', ctx.file_name], ['Email subject', ctx.subject],\n  ['Warnings', (ctx.warnings || []).join('; ')], ['Tracking row', ctx.tracking_id],\n].filter(([, v]) => v !== undefined && v !== null && v !== '');\nconst fmt = v => (v === null || v === undefined || v === '') ? '' : (typeof v === 'number' ? v.toFixed(2) : String(v));\nconst th = 'padding:6px;text-align:left;background:#374151;color:#FFFFFF;font-weight:bold';\nconst td = 'padding:6px;border-bottom:1px solid #E5E7EB';\nconst detailTable =\n  `<table style=\"border-collapse:collapse;width:100%\">` +\n  rows.map(([k, v], i) => `<tr style=\"background:${i % 2 ? '#F9FAFB' : '#FFFFFF'}\"><td style=\"padding:6px;font-weight:bold;width:30%;color:#374151\">${esc(k)}</td><td style=\"padding:6px\">${esc(v)}</td></tr>`).join('') +\n  `</table>`;\nconst checks = ctx.match_checks || {};\nconst checksTable = Object.keys(checks).length\n  ? `<h4 style=\"color:#374151;margin:16px 0 6px\">PO match checks</h4><table style=\"border-collapse:collapse;width:100%\">` +\n    `<tr><th style=\"${th}\">Check</th><th style=\"${th}\">Result</th><th style=\"${th}\">Detail</th></tr>` +\n    Object.entries(checks).map(([k, v]) => `<tr><td style=\"${td}\">${esc(k)}</td><td style=\"${td};font-weight:bold;color:${v.result === 'FAIL' ? '#B91C1C' : v.result === 'PASS' ? '#047857' : '#374151'}\">${esc(v.result)}</td><td style=\"${td}\">${esc(v.detail ?? '')}</td></tr>`).join('') +\n    `</table>` : '';\nconst vl = Array.isArray(ctx.variance_lines) ? ctx.variance_lines : [];\nconst varianceTable = vl.length\n  ? `<h4 style=\"color:#374151;margin:16px 0 6px\">Line variance (invoice vs ServiceTitan PO)</h4><table style=\"border-collapse:collapse;width:100%;font-size:13px\">` +\n    `<tr>${['SKU', 'Description', 'PO qty', 'Inv qty', 'PO unit', 'Inv unit', 'PO ext', 'Inv ext', 'Diff', 'Status'].map(h => `<th style=\"${th}\">${h}</th>`).join('')}</tr>` +\n    vl.map(r => `<tr style=\"background:${r.status === 'OK' ? '#FFFFFF' : '#FEF2F2'}\">` +\n      [r.sku, r.description, r.po_qty, r.inv_qty, r.po_unit, r.inv_unit, r.po_ext, r.inv_ext, r.diff, r.status]\n        .map((v, i) => `<td style=\"${td}${i === 9 && r.status !== 'OK' ? ';color:#B91C1C;font-weight:bold' : ''}\">${esc(i >= 2 && i <= 8 ? fmt(v) : v)}</td>`).join('') + `</tr>`).join('') +\n    `</table>` +\n    (ctx.variance_amount !== null && ctx.variance_amount !== undefined ? `<p style=\"margin:8px 0 0\"><b>Total variance (invoice - PO):</b> ${esc(fmt(ctx.variance_amount))}</p>` : '')\n  : '';\nconst html =\n  `<div style=\"font-family:Lato,Arial,sans-serif;font-size:14px;color:#111827;max-width:760px\">` +\n  `<h3 style=\"color:#462CED;margin:0 0 8px\">AP ${esc(category.toLowerCase().replace('_', ' '))}: ${esc(status)}</h3>` +\n  detailTable + checksTable + varianceTable + `</div>`;\n\n// Flat fields for the Daily Report table\nconst report = {\n  document_id: ctx.doc_id ?? '',\n  lane: ctx.lane ?? ctx.route ?? '',\n  po_number: ctx.po?.normalized ?? inv.po_number_raw ?? '',\n  location_id: ctx.location?.entity_id ?? '',\n  location_name: ctx.location?.code ? `${ctx.location.code} / ${ctx.location.name ?? ctx.location.entity_id ?? ''}` : '',\n  location_method: ctx.location?.method ?? ctx.location?.status ?? '',\n  st_po_number: ctx.st_po?.number ?? '',\n  st_po_id: ctx.st_po?.id != null ? String(ctx.st_po.id) : '',\n  st_po_status: ctx.st_po ? (ctx.st_po.status ?? 'FOUND') : (/^PO_NOT_FOUND|PO_AMBIGUOUS|PO_CANCELED|ST_API_ERROR/.test(status) ? status : ''),\n  line_count: ctx.line_count ?? (inv.line_items || []).length,\n  variance_amount: ctx.variance_amount ?? null,\n  invoice_vendor_mismatch: checks.vendor?.result ?? '',\n  invoice_location_mismatch: checks.location?.result ?? (status === 'LOCATION_CONFLICT' ? 'FAIL' : ''),\n  invoice_qty_mismatch: checks.quantity?.result ?? '',\n  invoice_price_mismatch: checks.total?.result ?? '',\n  match_details: Object.entries(checks).map(([k, v]) => `${k}: ${v.result}${v.detail ? ' (' + v.detail + ')' : ''}`).join(' | ').slice(0, 2000),\n  warnings: (ctx.warnings || []).join('; ').slice(0, 2000),\n};\nreturn [{ json: {\n  ctx,\n  report,\n  tracking_id: ctx.tracking_id ?? null,\n  processing_status: category,\n  exception_reason: `${status}: ${ctx.reason || 'no detail'}`.slice(0, 2000),\n  notify: !CONFIG.SILENT_STATUSES.includes(status),\n  notify_to: CONFIG.NOTIFY_TO,\n  email_subject: `[AP ${category}] ${status} | ${ctx.vendor?.name ?? 'Unknown vendor'} ${inv.invoice_number ?? ''}`.trim(),\n  email_html: html,\n} }];\n"
+      }
+    },
+    {
+      "id": "c84e03f2-4bb9-4945-b199-29ec4d535aac",
+      "name": "Has Tracking Row?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1024,
+        880
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "769f57cc-c7b0-4ddb-bc64-86d3bdd96128",
+              "leftValue": "={{ !!$json.tracking_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "1bead8f8-aa08-4ba2-9c0e-ea710d0aabb3",
+      "name": "Insert Row",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        -800,
+        976
+      ],
+      "parameters": {
+        "dataTableId": {
+          "__rl": true,
+          "value": "YQpLj9gtvsYErCBh",
+          "mode": "list",
+          "cachedResultName": "New Business Processing Datatable",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/YQpLj9gtvsYErCBh"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "message_id": "={{ $json.ctx.message_id ?? '' }}",
+            "subject": "={{ $json.ctx.subject ?? '' }}",
+            "attachment_name": "={{ $json.ctx.file_name ?? '' }}",
+            "vendor_name": "={{ $json.ctx.vendor?.name ?? '' }}",
+            "invoice_number": "={{ $json.ctx.invoice?.invoice_number ?? '' }}",
+            "processing_status": "={{ $json.processing_status }}",
+            "exception_reason": "={{ $json.exception_reason }}",
+            "document_id": "={{ $json.report.document_id }}",
+            "lane": "={{ $json.report.lane }}",
+            "po_number": "={{ $json.report.po_number }}",
+            "location_id": "={{ $json.report.location_id }}",
+            "location_name": "={{ $json.report.location_name }}",
+            "location_method": "={{ $json.report.location_method }}",
+            "st_po_number": "={{ $json.report.st_po_number }}",
+            "st_po_id": "={{ $json.report.st_po_id }}",
+            "st_po_status": "={{ $json.report.st_po_status }}",
+            "line_count": "={{ $json.report.line_count ?? null }}",
+            "variance_amount": "={{ $json.report.variance_amount ?? null }}",
+            "invoice_vendor_mismatch": "={{ $json.report.invoice_vendor_mismatch }}",
+            "invoice_location_mismatch": "={{ $json.report.invoice_location_mismatch }}",
+            "invoice_qty_mismatch": "={{ $json.report.invoice_qty_mismatch }}",
+            "invoice_price_mismatch": "={{ $json.report.invoice_price_mismatch }}",
+            "match_details": "={{ $json.report.match_details }}",
+            "warnings": "={{ $json.report.warnings }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "document_id",
+              "displayName": "document_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "document_type",
+              "displayName": "document_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "vendor_name",
+              "displayName": "vendor_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "invoice_number",
+              "displayName": "invoice_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "po_number",
+              "displayName": "po_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "location_id",
+              "displayName": "location_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "location_name",
+              "displayName": "location_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "gl_code",
+              "displayName": "gl_code",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "gl_name",
+              "displayName": "gl_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "sage_bill_id",
+              "displayName": "sage_bill_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "subject",
+              "displayName": "subject",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "attachment_name",
+              "displayName": "attachment_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "processing_status",
+              "displayName": "processing_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "exception_reason",
+              "displayName": "exception_reason",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "message_id",
+              "displayName": "message_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "total_amount",
+              "displayName": "total_amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "invoice_price_mismatch",
+              "displayName": "invoice_price_mismatch",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "invoice_qty_mismatch",
+              "displayName": "invoice_qty_mismatch",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "invoice_location_mismatch",
+              "displayName": "invoice_location_mismatch",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "invoice_vendor_mismatch",
+              "displayName": "invoice_vendor_mismatch",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "account_number_match",
+              "displayName": "account_number_match",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "utility_invoice_match_status",
+              "displayName": "utility_invoice_match_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "payment_terms",
+              "displayName": "payment_terms",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "lane",
+              "displayName": "lane",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "location_method",
+              "displayName": "location_method",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "st_po_number",
+              "displayName": "st_po_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "st_po_id",
+              "displayName": "st_po_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "st_po_status",
+              "displayName": "st_po_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "line_count",
+              "displayName": "line_count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "variance_amount",
+              "displayName": "variance_amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "match_details",
+              "displayName": "match_details",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "warnings",
+              "displayName": "warnings",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "319ad546-d4fb-4efd-b92a-a3e4ff667dd2",
+      "name": "Load Config",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        -1696,
+        880
+      ],
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "o7jlGvq1uEqz6zIy",
+          "mode": "list",
+          "cachedResultName": "summers.datastore.config.keys",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/o7jlGvq1uEqz6zIy"
+        },
+        "returnAll": true
+      },
+      "executeOnce": true
+    },
+    {
+      "id": "aa4fd158-878d-4218-a767-9a022bcc4381",
+      "name": "Notify?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -576,
+        880
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "4c93330d-ce14-481a-bb17-16c65bce953d",
+              "leftValue": "={{ $('Format Exception').first().json.notify === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "f9ecabc9-47f7-4792-a73c-0803090b037c",
+      "name": "Return",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -128,
+        880
+      ],
+      "parameters": {
+        "jsCode": "const ctx = $('Format Exception').first().json.ctx;\nreturn [{ json: ctx }];\n"
+      }
+    },
+    {
+      "id": "79fdcdbf-ba6f-43ce-a171-63b1e032c32e",
+      "name": "Start",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -1904,
+        880
+      ],
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
+      "id": "69da2ac2-1e39-4883-b695-5cb4590c6f5b",
+      "name": "Update Row",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        -800,
+        768
+      ],
+      "parameters": {
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "value": "YQpLj9gtvsYErCBh",
+          "mode": "list",
+          "cachedResultName": "New Business Processing Datatable",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/YQpLj9gtvsYErCBh"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "keyValue": "={{ $json.tracking_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "processing_status": "={{ $json.processing_status }}",
+            "exception_reason": "={{ $json.exception_reason }}",
+            "location_name": "={{ $json.report.location_name }}",
+            "document_id": "={{ $json.report.document_id }}",
+            "lane": "={{ $json.report.lane }}",
+            "po_number": "={{ $json.report.po_number }}",
+            "location_id": "={{ $json.report.location_id }}",
+            "location_method": "={{ $json.report.location_method }}",
+            "st_po_number": "={{ $json.report.st_po_number }}",
+            "st_po_id": "={{ $json.report.st_po_id }}",
+            "st_po_status": "={{ $json.report.st_po_status }}",
+            "line_count": "={{ $json.report.line_count ?? null }}",
+            "variance_amount": "={{ $json.report.variance_amount ?? null }}",
+            "invoice_vendor_mismatch": "={{ $json.report.invoice_vendor_mismatch }}",
+            "invoice_location_mismatch": "={{ $json.report.invoice_location_mismatch }}",
+            "invoice_qty_mismatch": "={{ $json.report.invoice_qty_mismatch }}",
+            "invoice_price_mismatch": "={{ $json.report.invoice_price_mismatch }}",
+            "match_details": "={{ $json.report.match_details }}",
+            "warnings": "={{ $json.report.warnings }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "processing_status",
+              "displayName": "processing_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "exception_reason",
+              "displayName": "exception_reason",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "location_name",
+              "displayName": "location_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "updated_at",
+              "displayName": "updated_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "document_id",
+              "displayName": "document_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "lane",
+              "displayName": "lane",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "po_number",
+              "displayName": "po_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "location_id",
+              "displayName": "location_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "location_method",
+              "displayName": "location_method",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "st_po_number",
+              "displayName": "st_po_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "st_po_id",
+              "displayName": "st_po_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "st_po_status",
+              "displayName": "st_po_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "line_count",
+              "displayName": "line_count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "variance_amount",
+              "displayName": "variance_amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "invoice_vendor_mismatch",
+              "displayName": "invoice_vendor_mismatch",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "invoice_location_mismatch",
+              "displayName": "invoice_location_mismatch",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "invoice_qty_mismatch",
+              "displayName": "invoice_qty_mismatch",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "invoice_price_mismatch",
+              "displayName": "invoice_price_mismatch",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "match_details",
+              "displayName": "match_details",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "warnings",
+              "displayName": "warnings",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Build Config": {
+      "main": [
+        [
+          {
+            "node": "Format Exception",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Reviewer": {
+      "main": [
+        []
+      ]
+    },
+    "Format Exception": {
+      "main": [
+        [
+          {
+            "node": "Has Tracking Row?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Tracking Row?": {
+      "main": [
+        [
+          {
+            "node": "Update Row",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Insert Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Row": {
+      "main": [
+        [
+          {
+            "node": "Notify?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Config": {
+      "main": [
+        [
+          {
+            "node": "Build Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify?": {
+      "main": [
+        [
+          {
+            "node": "Email Reviewer",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start": {
+      "main": [
+        [
+          {
+            "node": "Load Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Row": {
+      "main": [
+        [
+          {
+            "node": "Notify?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "tags": [
+    "AP Automation",
+    "Error Handling",
+    "Sub-flow"
+  ]
+}
