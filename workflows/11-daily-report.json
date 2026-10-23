@@ -1,0 +1,204 @@
+{
+  "id": "8ilTd20H47lI1gsa",
+  "name": "ANSA | 11. Daily Report",
+  "nodes": [
+    {
+      "id": "d7ed904d-6587-4018-8442-d2372736d7bd",
+      "name": "Build Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2592,
+        -192
+      ],
+      "parameters": {
+        "jsCode": "// Settings come from the summers.datastore.config.keys data table: { CATEGORY: { key: value } }.\nconst parse = v => {\n  if (v === null || v === undefined) return null;\n  const s = String(v).trim();\n  if (/^(true|false)$/i.test(s)) return s.toLowerCase() === 'true';\n  if (/^-?\\d+(\\.\\d+)?$/.test(s)) return Number(s);\n  if (/^[\\[{]/.test(s)) { try { return JSON.parse(s); } catch (e) { /* keep as text */ } }\n  return s;\n};\nconst cfg = {};\nfor (const { json: r } of $input.all()) {\n  if (!r || !r.category || !r.key) continue;\n  (cfg[r.category] ||= {})[r.key] = parse(r.value);\n}\n// Fail loudly if a required setting is missing, rather than running with a guess.\nconst REQUIRED = [\"EMAIL_CONFIG.statement_notify_to\", \"EMAIL_CONFIG.exception_notify_to\"];\nconst missing = REQUIRED.filter(p => { const [c, k] = p.split('.'); const v = cfg[c]?.[k]; return v === undefined || v === null || v === ''; });\nif (missing.length) throw new Error('Missing settings in summers.datastore.config.keys: ' + missing.join(', '));\nreturn [{ json: { cfg } }];\n"
+      }
+    },
+    {
+      "id": "83b4c6ed-f39b-4852-8823-b84527a8af75",
+      "name": "Code in JavaScript",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3024,
+        -192
+      ],
+      "parameters": {
+        "jsCode": "\nconst items = $input.all();\n\n// Include invoices from ALL locations\nconst invoices = items.map(item => item.json);\n\nconst escapeHtml = value =>\n  String(value ?? '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;');\n\nfunction getOutcome(invoice) {\n  const status = String(invoice.processing_status ?? '').trim();\n  const exception = String(invoice.exception_reason ?? '').trim();\n  const billId = String(invoice.sage_bill_id ?? '').trim();\n\n  if (exception) {\n    return `Error: ${exception}`;\n  }\n\n  if (/fail|error|exception/i.test(status)) {\n    return `Error: ${status}`;\n  }\n\n  if (/duplicate/i.test(status)) {\n    return `Duplicate: ${status}`;\n  }\n\n  if (\n    billId &&\n    /success|processed|posted|completed/i.test(status)\n  ) {\n    return `Processed successfully — Sage Bill ID: ${billId}`;\n  }\n\n  if (billId && !status) {\n    return `Review required: Sage Bill ID exists, but status is empty`;\n  }\n\n  if (status) {\n    return `Not confirmed: ${status}`;\n  }\n\n  return 'Error: Processing status, exception reason, and Sage Bill ID are empty';\n}\n\nfunction isSuccessful(invoice) {\n  const status = String(invoice.processing_status ?? '').trim();\n  const exception = String(invoice.exception_reason ?? '').trim();\n  const billId = String(invoice.sage_bill_id ?? '').trim();\n\n  return Boolean(\n    billId &&\n    !exception &&\n    /success|processed|posted|completed/i.test(status) &&\n    !/fail|error|exception|duplicate/i.test(status)\n  );\n}\n\nconst processed = invoices.filter(isSuccessful);\n\nconst errors = invoices.filter(invoice => {\n  const outcome = getOutcome(invoice);\n  return outcome.startsWith('Error:') ||\n         outcome.startsWith('Not confirmed:') ||\n         outcome.startsWith('Review required:');\n});\n\nconst rows = invoices.map(invoice => {\n  const outcome = getOutcome(invoice);\n  const successful = isSuccessful(invoice);\n\n  return `\n    <tr>\n      <td>${escapeHtml(invoice.invoice_number || 'N/A')}</td>\n      <td>${escapeHtml(invoice.vendor_name || 'N/A')}</td>\n      <td>${escapeHtml(invoice.po_number || 'N/A')}</td>\n      <td>${escapeHtml(invoice.location_name || 'N/A')}</td>\n      <td>${escapeHtml(invoice.total_amount ?? 'N/A')}</td>\n      <td>${escapeHtml(invoice.processing_status || 'Empty')}</td>\n      <td>${escapeHtml(invoice.exception_reason || 'None')}</td>\n      <td>${escapeHtml(invoice.sage_bill_id || 'None')}</td>\n      <td style=\"color:${successful ? '#18794e' : '#b42318'}\">\n        ${escapeHtml(outcome)}\n      </td>\n    </tr>`;\n}).join('');\n\nconst reportDate = new Date().toLocaleDateString('en-CA', {\n  timeZone: 'Asia/Kolkata'\n});\n\nconst html = `\n<div style=\"font-family:Arial,sans-serif;color:#222\">\n  <h2>Invoice Processing Report — All Locations</h2>\n  <p><b>Report date:</b> ${escapeHtml(reportDate)}</p>\n\n  <table cellpadding=\"10\" cellspacing=\"0\"\n    style=\"border-collapse:collapse;width:100%;margin-bottom:20px\"\n    border=\"1\">\n    <tr>\n      <th align=\"left\">Metric</th>\n      <th align=\"right\">Count</th>\n    </tr>\n    <tr>\n      <td>Total invoices received</td>\n      <td align=\"right\">${invoices.length}</td>\n    </tr>\n    <tr>\n      <td>Successfully processed and confirmed in Sage</td>\n      <td align=\"right\">${processed.length}</td>\n    </tr>\n    <tr>\n      <td>Errors / outcomes requiring attention</td>\n      <td align=\"right\">${errors.length}</td>\n    </tr>\n  </table>\n\n  <h3>Invoice Details</h3>\n  <table cellpadding=\"7\" cellspacing=\"0\"\n    style=\"border-collapse:collapse;width:100%;font-size:12px\"\n    border=\"1\">\n    <thead style=\"background:#eeeeee\">\n      <tr>\n        <th>Invoice Number</th>\n        <th>Vendor</th>\n        <th>PO Number</th>\n        <th>Location</th>\n        <th>Amount</th>\n        <th>Processing Status</th>\n        <th>Exception Reason</th>\n        <th>Sage Bill ID</th>\n        <th>Outcome</th>\n      </tr>\n    </thead>\n    <tbody>\n      ${rows || '<tr><td colspan=\"9\">No invoices found.</td></tr>'}\n    </tbody>\n  </table>\n\n  <p style=\"font-size:12px;color:#666\">\n    Successful processing is counted only when the status indicates success\n    and a Sage Bill ID is recorded. Empty or inconsistent results require review.\n  </p>\n</div>`;\n\nreturn [{\n  json: {\n    report_date: reportDate,\n    total_received: invoices.length,\n    total_processed: processed.length,\n    total_errors: errors.length,\n    subject: `Invoice Processing Report - ${reportDate}`,\n    html\n  }\n}];\n"
+      }
+    },
+    {
+      "id": "ab7c11ea-ec82-4fb1-b934-66647c70d17e",
+      "name": "Get row(s)",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        2816,
+        -192
+      ],
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "YQpLj9gtvsYErCBh",
+          "mode": "list",
+          "cachedResultName": "New Business Processing Datatable",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/YQpLj9gtvsYErCBh"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "createdAt",
+              "condition": "gte",
+              "keyValue": "={{ $now.setZone('America/New_York').minus({ days: 1 }).startOf('day').toISO() }}"
+            },
+            {
+              "keyName": "createdAt",
+              "condition": "lt",
+              "keyValue": "={{ $now.setZone('America/New_York').startOf('day').toISO() }}"
+            }
+          ]
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "1c63c8d6-0a29-45e7-9c23-b07fae17d6ff",
+      "name": "Load Config",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        2368,
+        -192
+      ],
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "o7jlGvq1uEqz6zIy",
+          "mode": "list",
+          "cachedResultName": "summers.datastore.config.keys",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/o7jlGvq1uEqz6zIy"
+        },
+        "returnAll": true
+      },
+      "executeOnce": true
+    },
+    {
+      "id": "9d476e9c-8bad-4d15-8278-a2e109a02379",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        2160,
+        -192
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 9
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "560b6c64-e0d4-4bd5-ac37-40cbecb2495b",
+      "name": "Send a message",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        3232,
+        -192
+      ],
+      "parameters": {
+        "sendTo": "={{ $('Build Config').first().json.cfg.EMAIL_CONFIG.statement_notify_to }}",
+        "subject": "=AP Processing Report for {{ $now.minus({ days: 1 }).toFormat('yyyy-MM-dd') }}",
+        "message": "={{ $json.html }}",
+        "options": {
+          "appendAttribution": false,
+          "ccList": "={{ [$('Build Config').item.json.cfg.EMAIL_CONFIG.error_notify_to, $('Build Config').item.json.cfg.EMAIL_CONFIG.CC_to].filter(Boolean).join(', ') }}"
+        }
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "v7zEv46gaNt0IQpa",
+          "name": "Gmail account 2"
+        }
+      },
+      "webhookId": "bd04ea2c-e08f-4ba4-97b8-703a1e307156"
+    }
+  ],
+  "connections": {
+    "Build Config": {
+      "main": [
+        [
+          {
+            "node": "Get row(s)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get row(s)": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Config": {
+      "main": [
+        [
+          {
+            "node": "Build Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Load Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "timezone": "America/New_York",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "tags": [
+    "AP Automation",
+    "Scheduled"
+  ]
+}
