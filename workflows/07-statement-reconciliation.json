@@ -1,0 +1,728 @@
+{
+  "id": "a7ZNcf15nj1AnDv5",
+  "name": "ANSA | 07. Statement Reconciliation",
+  "nodes": [
+    {
+      "id": "d331d005-af7c-4812-86bb-2c8e8210bf1d",
+      "name": "Build Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3136,
+        800
+      ],
+      "parameters": {
+        "jsCode": "// Settings come from the summers.datastore.config.keys data table: { CATEGORY: { key: value } }.\nconst parse = v => {\n  if (v === null || v === undefined) return null;\n  const s = String(v).trim();\n  if (/^(true|false)$/i.test(s)) return s.toLowerCase() === 'true';\n  if (/^-?\\d+(\\.\\d+)?$/.test(s)) return Number(s);\n  if (/^[\\[{]/.test(s)) { try { return JSON.parse(s); } catch (e) { /* keep as text */ } }\n  return s;\n};\nconst cfg = {};\nfor (const { json: r } of $input.all()) {\n  if (!r || !r.category || !r.key) continue;\n  (cfg[r.category] ||= {})[r.key] = parse(r.value);\n}\n// Fail loudly if a required setting is missing, rather than running with a guess.\nconst REQUIRED = [\"GLOBAL_CONFIG.doppler_secrets_url\", \"GLOBAL_CONFIG.sage_gateway_url\", \"STMT_RECON_CONFIG.lookback_days\", \"STMT_RECON_CONFIG.default_window_days\", \"STMT_RECON_CONFIG.tolerance_dollars\", \"STMT_RECON_CONFIG.suffix_match_min\", \"STMT_RECON_CONFIG.sage_page_size\", \"STMT_RECON_CONFIG.max_vendor_ids\", \"STMT_RECON_CONFIG.vendor_search_page_size\", \"EMAIL_CONFIG.statement_notify_to\", \"EMAIL_CONFIG.notify_on_reconciled\", \"EMAIL_CONFIG.internal_domains\", \"EMAIL_CONFIG.vendor_draft_enabled\", \"EMAIL_CONFIG.signature_team\", \"EMAIL_CONFIG.signature_company\"];\nconst missing = REQUIRED.filter(p => { const [c, k] = p.split('.'); const v = cfg[c]?.[k]; return v === undefined || v === null || v === ''; });\nif (missing.length) throw new Error('Missing settings in summers.datastore.config.keys: ' + missing.join(', '));\nreturn [{ json: { cfg } }];\n"
+      }
+    },
+    {
+      "id": "625d9f7f-6eb1-4267-9a11-692d3ec05ea2",
+      "name": "Build Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -272,
+        464
+      ],
+      "parameters": {
+        "jsCode": "// Reviewer email + optional vendor draft.\nconst E = $('Build Config').first().json.cfg.EMAIL_CONFIG;\nconst CONFIG = {\n  NOTIFY_TO: E.statement_notify_to,\n  NOTIFY_ON_RECONCILED: E.notify_on_reconciled === true,\n  INTERNAL_DOMAINS: Array.isArray(E.internal_domains) ? E.internal_domains : [E.internal_domains],\n  VENDOR_DRAFT_ENABLED: E.vendor_draft_enabled === true,\n  SIGNATURE_TEAM: E.signature_team,\n  COMPANY_NAME: E.signature_company,\n};\nconst ctx = $json;\nconst r = ctx.recon;\nconst esc = v => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst money = v => v === null || v === undefined ? '' : Number(v).toLocaleString('en-US', { style: 'currency', currency: 'USD' });\nconst COLOR = { MATCHED: '#047857', PAID_IN_SAGE: '#374151', PAYMENT_INFO: '#374151', CREDIT_NOT_CHECKED: '#B45309' };\nconst td = (v, extra = '') => `<td style=\"padding:5px 6px;border-bottom:1px solid #E5E7EB;${extra}\">${v}</td>`;\nconst th = v => `<th style=\"padding:6px;text-align:left;background:#374151;color:#FFFFFF;font-weight:bold\">${v}</th>`;\nconst table = (heads, rows) => `<table style=\"border-collapse:collapse;width:100%;font-size:13px\">` +\n  `<tr>${heads.map(th).join('')}</tr>${rows.join('')}</table>`;\n\nconst lineRows = r.lines.map(l => `<tr>${td(l.row)}${td(esc(l.kind))}${td(esc(l.number))}${td(esc(l.date))}${td(money(l.statement_amount), 'text-align:right')}` +\n  `${td(esc(l.sage_bill))}${td(money(l.sage_amount), 'text-align:right')}${td(money(l.sage_due), 'text-align:right')}` +\n  `${td(esc(l.result), `font-weight:bold;color:${COLOR[l.result] || '#B91C1C'}`)}</tr>`);\nconst onlyRows = r.sage_only.map(l => `<tr>${td(esc(l.sage_bill))}${td(esc(l.sage_vendor))}${td(esc(l.date))}${td(money(l.sage_amount), 'text-align:right')}${td(money(l.sage_due), 'text-align:right')}</tr>`);\nconst t = r.totals;\nconst summary = [['Vendor', ctx.vendor?.name], ['Statement date', ctx.stmt.statement_date], ['Account #', ctx.stmt.account_number],\n  ['Sage vendor IDs', (ctx.sage_vendors || []).map(v => v.id).join(', ')],\n  ['Location', ctx.location?.status === 'RESOLVED' ? `${ctx.location.code} (${ctx.location.entity_id})` : 'Not resolved (top-level Sage query)'],\n  ['Statement amount due', money(t.statement_due)], ['Sage open balance', money(t.sage_open)],\n  ['Paid in Sage (timing)', money(t.paid_in_sage_timing)], ['Unexplained difference', money(t.unexplained_difference)],\n  ['Warnings', (ctx.warnings || []).join('; ')], ['File', ctx.file_name]].filter(([, v]) => v !== undefined && v !== null && v !== '');\n\nconst html = `<div style=\"font-family:Lato,Arial,sans-serif;font-size:14px;color:#111827;max-width:900px\">` +\n  `<h3 style=\"color:#462CED;margin:0 0 6px\">Statement ${ctx.status === 'RECONCILED' ? 'reconciled' : 'has discrepancies'}: ${esc(ctx.vendor?.name)}</h3>` +\n  `<p style=\"margin:0 0 12px;color:#374151\">${esc(ctx.reason)}</p>` +\n  `<table style=\"border-collapse:collapse;margin-bottom:16px\">${summary.map(([k, v]) => `<tr><td style=\"padding:4px 12px 4px 0;font-weight:bold;color:#374151\">${esc(k)}</td><td style=\"padding:4px 0\">${esc(v)}</td></tr>`).join('')}</table>` +\n  `<h4 style=\"color:#374151;margin:12px 0 6px\">Statement lines</h4>` +\n  table(['#', 'Type', 'Number', 'Date', 'Statement', 'Sage bill', 'Sage amount', 'Sage due', 'Result'], lineRows) +\n  (onlyRows.length ? `<h4 style=\"color:#374151;margin:16px 0 6px\">Open in Sage but not on the statement</h4>` +\n    table(['Sage bill', 'Vendor ID', 'Date', 'Amount', 'Due'], onlyRows) : '') + `</div>`;\n\n// Vendor draft: ask for copies of missing invoices/credits and confirm mismatched amounts.\nconst ask = r.lines.filter(l => ['MISSING_IN_SAGE', 'CREDIT_MISSING_IN_SAGE', 'AMOUNT_MISMATCH'].includes(l.result));\nconst sender = String(ctx.from || '').trim().toLowerCase();\nconst external = sender.includes('@') && !CONFIG.INTERNAL_DOMAINS.some(d => sender.endsWith('@' + d) || sender.endsWith('.' + d));\nconst draftRows = ask.map(l => `<tr>${td(esc(l.number))}${td(esc(l.date))}${td(money(l.statement_amount), 'text-align:right')}` +\n  `${td(l.result === 'AMOUNT_MISMATCH' ? `Our records show ${money(l.sage_amount)}; please confirm` : 'Please send a copy')}</tr>`);\nconst draftHtml = `<div style=\"font-family:Lato,Arial,sans-serif;font-size:14px;color:#111827\">` +\n  `<p>Hello,</p><p>Thank you for your statement${ctx.stmt.statement_date ? ` dated ${esc(ctx.stmt.statement_date)}` : ''}` +\n  `${ctx.stmt.account_number ? ` for account ${esc(ctx.stmt.account_number)}` : ''}. We could not match the items below to our records:</p>` +\n  table(['Document #', 'Date', 'Amount', 'Request'], draftRows) +\n  `<p>Please reply with copies or corrections at your earliest convenience.</p><p>Thank you,<br>${esc(CONFIG.SIGNATURE_TEAM)}<br>${esc(CONFIG.COMPANY_NAME)}</p></div>`;\n\nreturn [{ json: {\n  ctx,\n  notify: ctx.status !== 'RECONCILED' || CONFIG.NOTIFY_ON_RECONCILED,\n  notify_to: CONFIG.NOTIFY_TO,\n  email_subject: `[AP Statement ${ctx.status === 'RECONCILED' ? 'RECONCILED' : 'DISCREPANCIES'}] ${ctx.vendor?.name ?? ''} ${ctx.stmt.statement_date ?? ''}`.trim(),\n  email_html: html,\n  draft: CONFIG.VENDOR_DRAFT_ENABLED && ask.length > 0 && external,\n  draft_to: external ? sender : '',\n  draft_subject: `Statement reconciliation${ctx.stmt.account_number ? ` – account ${ctx.stmt.account_number}` : ''}${ctx.stmt.statement_date ? ` – ${ctx.stmt.statement_date}` : ''}`,\n  draft_html: draftHtml,\n} }];\n"
+      }
+    },
+    {
+      "id": "6cdf323b-29a4-4faf-bb91-c1b65a826299",
+      "name": "Build Vendor Query",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2240,
+        672
+      ],
+      "parameters": {
+        "jsCode": "const LEGAL_SUFFIXES = /\\b(incorporated|llc|l\\.l\\.c|inc|corp|corporation|co|company|ltd|limited|llp|lp|enterprises?|facilit(?:y|ies)|industries|international|the)\\b/g;\nfunction normVendor(raw) {\n  if (!raw) return '';\n  return String(raw).toLowerCase()\n    .replace(/&/g, ' and ')\n    .replace(/[.,\\/#!$%\\^*;:{}=\\-_`~()'\"]/g, ' ')\n    .replace(LEGAL_SUFFIXES, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\nconst arr = v => (v === undefined || v === null) ? [] : (Array.isArray(v) ? v : [v]);\nconst esc = v => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;').replace(/'/g, '&apos;');\n\nfunction sageCreds() {\n  const s = $('Doppler').first().json;\n  const c = {\n    sender: s.SAGE_SENDER_ID ?? s.SAGE_COMPANY_ID,\n    senderPw: s.SAGE_SENDER_PASSWORD ?? s.SAGE_COMPANY_PASSWORD,\n    company: s.SAGE_COMPANY_ID,\n    user: s.SAGE_USER_ID ?? s.USER_ID,\n    userPw: s.SAGE_USER_PASSWORD ?? s.USER_PASSWORD,\n  };\n  const missing = Object.entries(c).filter(([, v]) => !v).map(([k]) => k);\n  if (missing.length) throw new Error(`Doppler is missing Sage secrets: ${missing.join(', ')}`);\n  return c;\n}\n\n// Login auth on every request (no session step). locationId scopes the request to the entity.\nfunction sageEnvelope(locationId, functionsXml) {\n  const c = sageCreds();\n  return `<?xml version=\"1.0\" encoding=\"UTF-8\"?>` +\n    `<request><control><senderid>${esc(c.sender)}</senderid><password>${esc(c.senderPw)}</password>` +\n    `<controlid>${Date.now()}</controlid><uniqueid>false</uniqueid><dtdversion>3.0</dtdversion><includewhitespace>false</includewhitespace></control>` +\n    `<operation><authentication><login><userid>${esc(c.user)}</userid><companyid>${esc(c.company)}</companyid><password>${esc(c.userPw)}</password>` +\n    (locationId ? `<locationid>${esc(locationId)}</locationid>` : '') +\n    `</login></authentication><content>${functionsXml}</content></operation></request>`;\n}\n\n// Collect every <errormessage> in a parsed Sage response.\nfunction sageErrors(o, acc = []) {\n  if (!o || typeof o !== 'object') return acc;\n  for (const [k, v] of Object.entries(o)) {\n    if (k === 'errormessage') {\n      for (const e of arr(v?.error)) {\n        acc.push([e.errorno, e.description, e.description2, e.correction].filter(x => typeof x === 'string' && x.trim()).join(' — '));\n      }\n    } else if (v && typeof v === 'object') {\n      sageErrors(v, acc);\n    }\n  }\n  return acc;\n}\n\n// Sage returns HTTP 200 even on failure, so the status has to be read from the body.\nfunction sageResults(j) {\n  const resp = j?.response;\n  if (!resp) {\n    const e = j?.error;\n    return { error: 'No parseable response from Sage' + (e ? `: ${typeof e === 'string' ? e : (e.message || JSON.stringify(e))}` : '') };\n  }\n  if (resp.control?.status !== 'success') return { error: 'Sage control block failed: ' + (sageErrors(resp).join(' | ') || 'no detail') };\n  if (resp.operation?.authentication?.status !== 'success') return { error: 'Sage login failed: ' + (sageErrors(resp).join(' | ') || 'no detail') };\n  return { list: arr(resp.operation?.result) };\n}\n\nconst S = $('Build Config').first().json.cfg.STMT_RECON_CONFIG;\nconst ctx = JSON.parse(JSON.stringify($('Normalize Statement').first().json));\nconst words = normVendor(ctx.vendor.name).split(' ').filter(w => w.length > 1 && w !== 'and');\nconst term = words.slice(0, 2).join(' ') || ctx.vendor.name;\nctx.sage_xml = sageEnvelope(ctx.sage_login_location,\n  `<function controlid=\"vendorLookup\"><query><object>VENDOR</object><select><field>VENDORID</field><field>NAME</field><field>STATUS</field></select>` +\n  `<filter><like><field>NAME</field><value>%${esc(term)}%</value></like></filter><options><caseinsensitive>true</caseinsensitive></options><pagesize>${S.vendor_search_page_size}</pagesize></query></function>`);\nreturn [{ json: ctx }];\n"
+      }
+    },
+    {
+      "id": "8d4ac895-73e7-45d8-b81f-3aa6310fde2c",
+      "name": "Doppler",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -2464,
+        672
+      ],
+      "parameters": {
+        "url": "={{ $('Build Config').first().json.cfg.GLOBAL_CONFIG.doppler_secrets_url }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpBearerAuth",
+        "options": {}
+      },
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "WpMLhePuqEaC0POZ",
+          "name": "Doppler Auth 2"
+        }
+      },
+      "retryOnFail": true
+    },
+    {
+      "id": "b7d73a5b-056e-4b47-af05-abd894dc5ab8",
+      "name": "Draft to Vendor?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -48,
+        464
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d290d203-02a3-451a-9d93-83c8efaff632",
+              "leftValue": "={{ $json.draft === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "6b02e6d3-bd12-470a-8146-094730708a21",
+      "name": "Email Reviewer",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        624,
+        352
+      ],
+      "parameters": {
+        "sendTo": "={{ $('Build Report').first().json.notify_to }}",
+        "subject": "={{ $('Build Report').first().json.email_subject }}",
+        "message": "={{ $('Build Report').first().json.email_html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "v7zEv46gaNt0IQpa",
+          "name": "Gmail account 2"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "webhookId": "61dd4482-34a6-4984-8f9d-509e81dbfc5a"
+    },
+    {
+      "id": "d056281d-e2ab-4bf2-9a7a-7516d76d1cb3",
+      "name": "Load Config",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        -3360,
+        800
+      ],
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "o7jlGvq1uEqz6zIy",
+          "mode": "list",
+          "cachedResultName": "summers.datastore.config.keys",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/o7jlGvq1uEqz6zIy"
+        },
+        "returnAll": true
+      },
+      "executeOnce": true
+    },
+    {
+      "id": "eb7be999-e2d9-4a79-bc79-89323107f92a",
+      "name": "Normalize Statement",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2912,
+        800
+      ],
+      "parameters": {
+        "jsCode": "const round2 = n => Math.round(n * 100) / 100;\nfunction num(v) {\n  if (v === null || v === undefined || v === '') return null;\n  if (typeof v === 'number') return Number.isFinite(v) ? v : null;\n  const s = String(v).trim();\n  const neg = /^\\(.*\\)$/.test(s) || /-\\s*$/.test(s) || /^-/.test(s) || /\\bCR\\b/i.test(s);\n  const digits = s.replace(/[^0-9.]/g, '');\n  if (!digits) return null;\n  const n = Number(digits);\n  return Number.isFinite(n) ? (neg ? -n : n) : null;\n}\nconst pad = x => String(x).padStart(2, '0');\nfunction isoDate(v) {\n  if (!v) return null;\n  const s = String(v).trim();\n  let m = s.match(/^(\\d{4})-(\\d{1,2})-(\\d{1,2})/);\n  if (m) return `${m[1]}-${pad(m[2])}-${pad(m[3])}`;\n  m = s.match(/^(\\d{1,2})[\\/\\-.](\\d{1,2})[\\/\\-.](\\d{2,4})$/);\n  if (m) { const y = m[3].length === 2 ? '20' + m[3] : m[3]; return `${y}-${pad(m[1])}-${pad(m[2])}`; }\n  const d = new Date(s);\n  if (!isNaN(d)) return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;\n  return null;\n}\n\n// Normalize the extracted statement and work out the Sage date window.\nconst S = $('Build Config').first().json.cfg.STMT_RECON_CONFIG;\nconst CONFIG = { LOOKBACK_DAYS: S.lookback_days, DEFAULT_WINDOW_DAYS: S.default_window_days };\nconst ctx = JSON.parse(JSON.stringify($('Start').first().json));\nctx.warnings = ctx.warnings || [];\nctx.status = null;\nconst fail = (s, r) => { ctx.status = s; ctx.reason = r; return [{ json: ctx }]; };\n\nconst s = ctx.statement || {};\nconst tx = (Array.isArray(s.transactions) ? s.transactions : []).map((t, i) => {\n  const amount = num(t.amount), balance = num(t.balance);\n  const type = String(t.type ?? '').toLowerCase();\n  let kind = 'INVOICE';\n  if (/pay|pmt|check|chk|remit|receipt/.test(type)) kind = 'PAYMENT';\n  else if (/credit|\\bcm\\b|return|adj/.test(type) || (amount !== null && amount < 0)) kind = 'CREDIT';\n  return { row: i + 1, kind, type: t.type ?? null, date: isoDate(t.date), date_raw: t.date ?? null,\n           number: t.invoice_number ? String(t.invoice_number).trim() : (t.reference ? String(t.reference).trim() : null),\n           po_number: t.po_number ?? null, amount, balance };\n}).filter(t => t.number || t.amount !== null);\n\nctx.stmt = {\n  statement_date: isoDate(s.statement_date), account_number: s.account_number ?? null, due_date: isoDate(s.due_date),\n  previous_balance: num(s.previous_balance), payments: num(s.payments), credits: num(s.credits),\n  current_charges: num(s.current_charges), amount_due: num(s.amount_due), transactions: tx,\n};\ndelete ctx.statement;\n\nif (!ctx.vendor?.name) return fail('STATEMENT_FAILED', 'Statement has no vendor name');\nif (!tx.length) return fail('STATEMENT_NO_TRANSACTIONS', 'No transaction lines could be read from the statement');\n\nconst dayMs = 86400000;\nconst dates = tx.map(t => t.date).filter(Boolean).sort();\nlet since;\nif (dates.length) since = new Date(new Date(dates[0]).getTime() - CONFIG.LOOKBACK_DAYS * dayMs);\nelse since = new Date((ctx.stmt.statement_date ? new Date(ctx.stmt.statement_date).getTime() : Date.now()) - CONFIG.DEFAULT_WINDOW_DAYS * dayMs);\nctx.stmt.sage_since = `${pad(since.getUTCMonth() + 1)}/${pad(since.getUTCDate())}/${since.getUTCFullYear()}`;\nctx.sage_login_location = ctx.location?.status === 'RESOLVED' ? (ctx.location.entity_id || null) : null;\nreturn [{ json: ctx }];\n"
+      }
+    },
+    {
+      "id": "822c1524-24ad-45ff-945d-b17e435e12ed",
+      "name": "Notify?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        400,
+        464
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b7fbba1b-5a1e-443c-9686-50b9fe52c085",
+              "leftValue": "={{ $('Build Report').first().json.notify === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "f8b15b70-f0e1-42db-a223-6dd8ac28ac6a",
+      "name": "Outlook Vendor Draft",
+      "type": "n8n-nodes-base.microsoftOutlook",
+      "typeVersion": 2,
+      "position": [
+        176,
+        352
+      ],
+      "parameters": {
+        "resource": "draft",
+        "subject": "={{ $('Build Report').first().json.draft_subject }}",
+        "bodyContent": "={{ $('Build Report').first().json.draft_html }}",
+        "additionalFields": {
+          "bodyContentType": "html",
+          "toRecipients": "={{ $('Build Report').first().json.draft_to }}"
+        }
+      },
+      "credentials": {
+        "microsoftOutlookOAuth2Api": {
+          "id": "cAQ9oZ8v24e2Av5G",
+          "name": "Microsoft Outlook account 5"
+        }
+      },
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "webhookId": "5c7bef42-d3fd-42f9-a3df-4981d557895a"
+    },
+    {
+      "id": "f8ac7059-aaae-4f63-9402-dc5d3b53e564",
+      "name": "Parse Bills",
+      "type": "n8n-nodes-base.xml",
+      "typeVersion": 1,
+      "position": [
+        -928,
+        560
+      ],
+      "parameters": {
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "ce66df98-f1d7-4297-a749-99845fb66c06",
+      "name": "Parse Vendor",
+      "type": "n8n-nodes-base.xml",
+      "typeVersion": 1,
+      "position": [
+        -1808,
+        672
+      ],
+      "parameters": {
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "057246b0-364f-411c-97e2-641d7afb2669",
+      "name": "Reconcile",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -704,
+        560
+      ],
+      "parameters": {
+        "jsCode": "const round2 = n => Math.round(n * 100) / 100;\nfunction num(v) {\n  if (v === null || v === undefined || v === '') return null;\n  if (typeof v === 'number') return Number.isFinite(v) ? v : null;\n  const s = String(v).trim();\n  const neg = /^\\(.*\\)$/.test(s) || /-\\s*$/.test(s) || /^-/.test(s) || /\\bCR\\b/i.test(s);\n  const digits = s.replace(/[^0-9.]/g, '');\n  if (!digits) return null;\n  const n = Number(digits);\n  return Number.isFinite(n) ? (neg ? -n : n) : null;\n}\nconst pad = x => String(x).padStart(2, '0');\nfunction isoDate(v) {\n  if (!v) return null;\n  const s = String(v).trim();\n  let m = s.match(/^(\\d{4})-(\\d{1,2})-(\\d{1,2})/);\n  if (m) return `${m[1]}-${pad(m[2])}-${pad(m[3])}`;\n  m = s.match(/^(\\d{1,2})[\\/\\-.](\\d{1,2})[\\/\\-.](\\d{2,4})$/);\n  if (m) { const y = m[3].length === 2 ? '20' + m[3] : m[3]; return `${y}-${pad(m[1])}-${pad(m[2])}`; }\n  const d = new Date(s);\n  if (!isNaN(d)) return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;\n  return null;\n}\n\nconst arr = v => (v === undefined || v === null) ? [] : (Array.isArray(v) ? v : [v]);\nconst esc = v => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;').replace(/'/g, '&apos;');\n\nfunction sageCreds() {\n  const s = $('Doppler').first().json;\n  const c = {\n    sender: s.SAGE_SENDER_ID ?? s.SAGE_COMPANY_ID,\n    senderPw: s.SAGE_SENDER_PASSWORD ?? s.SAGE_COMPANY_PASSWORD,\n    company: s.SAGE_COMPANY_ID,\n    user: s.SAGE_USER_ID ?? s.USER_ID,\n    userPw: s.SAGE_USER_PASSWORD ?? s.USER_PASSWORD,\n  };\n  const missing = Object.entries(c).filter(([, v]) => !v).map(([k]) => k);\n  if (missing.length) throw new Error(`Doppler is missing Sage secrets: ${missing.join(', ')}`);\n  return c;\n}\n\n// Login auth on every request (no session step). locationId scopes the request to the entity.\nfunction sageEnvelope(locationId, functionsXml) {\n  const c = sageCreds();\n  return `<?xml version=\"1.0\" encoding=\"UTF-8\"?>` +\n    `<request><control><senderid>${esc(c.sender)}</senderid><password>${esc(c.senderPw)}</password>` +\n    `<controlid>${Date.now()}</controlid><uniqueid>false</uniqueid><dtdversion>3.0</dtdversion><includewhitespace>false</includewhitespace></control>` +\n    `<operation><authentication><login><userid>${esc(c.user)}</userid><companyid>${esc(c.company)}</companyid><password>${esc(c.userPw)}</password>` +\n    (locationId ? `<locationid>${esc(locationId)}</locationid>` : '') +\n    `</login></authentication><content>${functionsXml}</content></operation></request>`;\n}\n\n// Collect every <errormessage> in a parsed Sage response.\nfunction sageErrors(o, acc = []) {\n  if (!o || typeof o !== 'object') return acc;\n  for (const [k, v] of Object.entries(o)) {\n    if (k === 'errormessage') {\n      for (const e of arr(v?.error)) {\n        acc.push([e.errorno, e.description, e.description2, e.correction].filter(x => typeof x === 'string' && x.trim()).join(' — '));\n      }\n    } else if (v && typeof v === 'object') {\n      sageErrors(v, acc);\n    }\n  }\n  return acc;\n}\n\n// Sage returns HTTP 200 even on failure, so the status has to be read from the body.\nfunction sageResults(j) {\n  const resp = j?.response;\n  if (!resp) {\n    const e = j?.error;\n    return { error: 'No parseable response from Sage' + (e ? `: ${typeof e === 'string' ? e : (e.message || JSON.stringify(e))}` : '') };\n  }\n  if (resp.control?.status !== 'success') return { error: 'Sage control block failed: ' + (sageErrors(resp).join(' | ') || 'no detail') };\n  if (resp.operation?.authentication?.status !== 'success') return { error: 'Sage login failed: ' + (sageErrors(resp).join(' | ') || 'no detail') };\n  return { list: arr(resp.operation?.result) };\n}\n\n// Line-by-line match of statement transactions to Sage bills and credits.\nconst S = $('Build Config').first().json.cfg.STMT_RECON_CONFIG;\nconst CONFIG = { TOLERANCE: S.tolerance_dollars, SUFFIX_MATCH_MIN: S.suffix_match_min, PAGE_SIZE: S.sage_page_size };\nconst tol = CONFIG.TOLERANCE;\nconst ctx = JSON.parse(JSON.stringify($('Resolve Vendor').first().json));\ndelete ctx.sage_xml;\nconst fail = (s, r) => { ctx.status = s; ctx.reason = r; return [{ json: ctx }]; };\n\nconst res = sageResults($input.first()?.json);\nif (res.error) return fail('STATEMENT_FAILED', res.error);\nconst br = res.list.find(x => x.controlid === 'bills');\nif (!br || br.status !== 'success') return fail('STATEMENT_FAILED', 'Sage bill query failed: ' + (sageErrors(br).join(' | ') || 'no detail'));\nconst bills = arr(br.data?.APBILL ?? br.data?.apbill);\nif (bills.length >= CONFIG.PAGE_SIZE) ctx.warnings.push(`Sage returned ${CONFIG.PAGE_SIZE} bills (page limit); older bills may be missing`);\nconst cr = res.list.find(x => x.controlid === 'credits');\nconst credits = cr?.status === 'success' ? arr(cr.data?.APADJUSTMENT ?? cr.data?.apadjustment) : null;\nif (credits === null) ctx.warnings.push('Sage credit lookup unavailable; statement credits not checked: ' + (sageErrors(cr).join(' | ') || 'no detail'));\n\nconst normId = v => String(v ?? '').replace(/[^A-Za-z0-9]/g, '').replace(/^0+/, '').toUpperCase();\nconst mdyIso = v => { const m = String(v ?? '').match(/^(\\d{1,2})\\/(\\d{1,2})\\/(\\d{4})/); return m ? `${m[3]}-${pad(m[1])}-${pad(m[2])}` : isoDate(v); };\nconst used = new Set();\nfunction findDoc(list, t) {\n  const key = normId(t.number);\n  const free = list.filter(b => !used.has(b.RECORDNO));\n  if (key) {\n    const exact = free.find(b => normId(b.RECORDID) === key);\n    if (exact) return exact;\n    if (key.length >= CONFIG.SUFFIX_MATCH_MIN) {\n      const near = free.filter(b => { const r = normId(b.RECORDID); return r.length >= CONFIG.SUFFIX_MATCH_MIN && (r.endsWith(key) || key.endsWith(r)); });\n      if (near.length === 1) return near[0];\n    }\n  }\n  if (t.po_number && t.amount !== null) {\n    const po = normId(t.po_number);\n    const byPo = free.filter(b => normId(b.DOCNUMBER).startsWith(po.slice(0, 9)) && Math.abs(Math.abs(num(b.TOTALENTERED) ?? 0) - Math.abs(t.amount)) <= tol);\n    if (byPo.length === 1) return byPo[0];\n  }\n  return null;\n}\n\nconst lines = ctx.stmt.transactions.map(t => {\n  const base = { row: t.row, kind: t.kind, number: t.number, date: t.date || t.date_raw, statement_amount: t.amount, statement_balance: t.balance,\n                 sage_bill: null, sage_amount: null, sage_due: null };\n  if (t.kind === 'PAYMENT') return { ...base, result: 'PAYMENT_INFO' };\n  if (t.kind === 'CREDIT' && credits === null) return { ...base, result: 'CREDIT_NOT_CHECKED' };\n  const doc = findDoc(t.kind === 'CREDIT' ? credits : bills, t);\n  if (!doc) return { ...base, result: t.kind === 'CREDIT' ? 'CREDIT_MISSING_IN_SAGE' : 'MISSING_IN_SAGE' };\n  used.add(doc.RECORDNO);\n  const sageAmt = num(doc.TOTALENTERED), sageDue = num(doc.TOTALDUE);\n  const out = { ...base, sage_record_no: doc.RECORDNO, sage_bill: doc.RECORDID, sage_vendor: doc.VENDORID, sage_amount: sageAmt, sage_due: sageDue };\n  if (t.amount !== null && sageAmt !== null && Math.abs(Math.abs(sageAmt) - Math.abs(t.amount)) > tol) return { ...out, result: 'AMOUNT_MISMATCH' };\n  if (t.kind === 'INVOICE' && sageDue !== null && Math.abs(sageDue) <= tol && (t.balance === null || t.balance > tol)) return { ...out, result: 'PAID_IN_SAGE' };\n  return { ...out, result: 'MATCHED' };\n});\n\nconst stmtDate = ctx.stmt.statement_date;\nconst sageOnly = bills\n  .filter(b => !used.has(b.RECORDNO) && (num(b.TOTALDUE) ?? 0) > tol && (!stmtDate || (mdyIso(b.WHENCREATED) || '') <= stmtDate))\n  .map(b => ({ sage_record_no: b.RECORDNO, sage_bill: b.RECORDID, sage_vendor: b.VENDORID, date: mdyIso(b.WHENCREATED), sage_amount: num(b.TOTALENTERED), sage_due: num(b.TOTALDUE), result: 'OPEN_IN_SAGE_ONLY' }));\n\n// Totals: statement amount due vs Sage open balance, after known timing items.\nconst openBills = bills.filter(b => !stmtDate || (mdyIso(b.WHENCREATED) || '') <= stmtDate).reduce((s, b) => s + Math.max(num(b.TOTALDUE) ?? 0, 0), 0);\nconst openCredits = (credits || []).reduce((s, c) => s + Math.abs(num(c.TOTALDUE) ?? 0), 0);\nconst sageOpen = round2(openBills - openCredits);\nconst timing = round2(lines.filter(l => l.result === 'PAID_IN_SAGE').reduce((s, l) => s + (l.statement_balance ?? l.statement_amount ?? 0), 0));\nconst stmtDue = ctx.stmt.amount_due;\nconst unexplained = stmtDue === null ? null : round2(stmtDue - sageOpen - timing);\n\nconst count = r => lines.filter(l => l.result === r).length;\nconst DISC = ['MISSING_IN_SAGE', 'CREDIT_MISSING_IN_SAGE', 'AMOUNT_MISMATCH'];\nconst discrepancies = lines.filter(l => DISC.includes(l.result)).length + sageOnly.length + (unexplained !== null && Math.abs(unexplained) > tol ? 1 : 0);\n\nctx.recon = {\n  lines, sage_only: sageOnly,\n  totals: { statement_due: stmtDue, sage_open: sageOpen, paid_in_sage_timing: timing, unexplained_difference: unexplained },\n  counts: { matched: count('MATCHED'), missing_in_sage: count('MISSING_IN_SAGE'), credit_missing_in_sage: count('CREDIT_MISSING_IN_SAGE'),\n            amount_mismatch: count('AMOUNT_MISMATCH'), paid_in_sage: count('PAID_IN_SAGE'), open_in_sage_only: sageOnly.length,\n            payments: count('PAYMENT_INFO'), credits_not_checked: count('CREDIT_NOT_CHECKED') },\n};\nconst c = ctx.recon.counts;\nctx.status = discrepancies ? 'STATEMENT_DISCREPANCIES' : 'RECONCILED';\nctx.reason = `${c.matched} matched, ${c.missing_in_sage} missing in Sage, ${c.credit_missing_in_sage} credits missing, ${c.amount_mismatch} amount mismatches, ` +\n  `${c.paid_in_sage} paid in Sage, ${c.open_in_sage_only} open only in Sage; statement due ${stmtDue ?? 'n/a'} vs Sage open ${sageOpen}` +\n  (unexplained !== null ? ` (unexplained ${unexplained})` : '');\nreturn [{ json: ctx }];\n"
+      }
+    },
+    {
+      "id": "49d5a66b-60d3-41f9-95bb-c59a237936ef",
+      "name": "Reconciled OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -480,
+        560
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a9861fc1-cb11-4433-a2f5-19f5cdf0a8d0",
+              "leftValue": "={{ !!$json.recon }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "a36aa0a3-192a-4a23-8d8e-a6098b770e31",
+      "name": "Resolve Vendor",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1584,
+        672
+      ],
+      "parameters": {
+        "jsCode": "const LEGAL_SUFFIXES = /\\b(incorporated|llc|l\\.l\\.c|inc|corp|corporation|co|company|ltd|limited|llp|lp|enterprises?|facilit(?:y|ies)|industries|international|the)\\b/g;\nfunction normVendor(raw) {\n  if (!raw) return '';\n  return String(raw).toLowerCase()\n    .replace(/&/g, ' and ')\n    .replace(/[.,\\/#!$%\\^*;:{}=\\-_`~()'\"]/g, ' ')\n    .replace(LEGAL_SUFFIXES, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\nconst arr = v => (v === undefined || v === null) ? [] : (Array.isArray(v) ? v : [v]);\nconst esc = v => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;').replace(/'/g, '&apos;');\n\nfunction sageCreds() {\n  const s = $('Doppler').first().json;\n  const c = {\n    sender: s.SAGE_SENDER_ID ?? s.SAGE_COMPANY_ID,\n    senderPw: s.SAGE_SENDER_PASSWORD ?? s.SAGE_COMPANY_PASSWORD,\n    company: s.SAGE_COMPANY_ID,\n    user: s.SAGE_USER_ID ?? s.USER_ID,\n    userPw: s.SAGE_USER_PASSWORD ?? s.USER_PASSWORD,\n  };\n  const missing = Object.entries(c).filter(([, v]) => !v).map(([k]) => k);\n  if (missing.length) throw new Error(`Doppler is missing Sage secrets: ${missing.join(', ')}`);\n  return c;\n}\n\n// Login auth on every request (no session step). locationId scopes the request to the entity.\nfunction sageEnvelope(locationId, functionsXml) {\n  const c = sageCreds();\n  return `<?xml version=\"1.0\" encoding=\"UTF-8\"?>` +\n    `<request><control><senderid>${esc(c.sender)}</senderid><password>${esc(c.senderPw)}</password>` +\n    `<controlid>${Date.now()}</controlid><uniqueid>false</uniqueid><dtdversion>3.0</dtdversion><includewhitespace>false</includewhitespace></control>` +\n    `<operation><authentication><login><userid>${esc(c.user)}</userid><companyid>${esc(c.company)}</companyid><password>${esc(c.userPw)}</password>` +\n    (locationId ? `<locationid>${esc(locationId)}</locationid>` : '') +\n    `</login></authentication><content>${functionsXml}</content></operation></request>`;\n}\n\n// Collect every <errormessage> in a parsed Sage response.\nfunction sageErrors(o, acc = []) {\n  if (!o || typeof o !== 'object') return acc;\n  for (const [k, v] of Object.entries(o)) {\n    if (k === 'errormessage') {\n      for (const e of arr(v?.error)) {\n        acc.push([e.errorno, e.description, e.description2, e.correction].filter(x => typeof x === 'string' && x.trim()).join(' — '));\n      }\n    } else if (v && typeof v === 'object') {\n      sageErrors(v, acc);\n    }\n  }\n  return acc;\n}\n\n// Sage returns HTTP 200 even on failure, so the status has to be read from the body.\nfunction sageResults(j) {\n  const resp = j?.response;\n  if (!resp) {\n    const e = j?.error;\n    return { error: 'No parseable response from Sage' + (e ? `: ${typeof e === 'string' ? e : (e.message || JSON.stringify(e))}` : '') };\n  }\n  if (resp.control?.status !== 'success') return { error: 'Sage control block failed: ' + (sageErrors(resp).join(' | ') || 'no detail') };\n  if (resp.operation?.authentication?.status !== 'success') return { error: 'Sage login failed: ' + (sageErrors(resp).join(' | ') || 'no detail') };\n  return { list: arr(resp.operation?.result) };\n}\n\n// Pick the Sage vendor ID(s), then query their bills and credits in one request.\nconst S = $('Build Config').first().json.cfg.STMT_RECON_CONFIG;\nconst ctx = JSON.parse(JSON.stringify($('Build Vendor Query').first().json));\ndelete ctx.sage_xml;\nconst fail = (s, r) => { ctx.status = s; ctx.reason = r; return [{ json: ctx }]; };\n\nconst res = sageResults($input.first()?.json);\nif (res.error) return fail('STATEMENT_FAILED', res.error);\nconst vr = res.list.find(x => x.controlid === 'vendorLookup');\nif (!vr || vr.status !== 'success') return fail('STATEMENT_FAILED', 'Sage vendor lookup failed: ' + (sageErrors(vr).join(' | ') || 'no detail'));\n\nconst vendors = arr(vr.data?.VENDOR ?? vr.data?.vendor).filter(v => !v.STATUS || /^(active|t)$/i.test(String(v.STATUS)));\nconst target = normVendor(ctx.vendor.name);\nlet picks = vendors.filter(v => normVendor(v.NAME) === target);\nif (!picks.length) picks = vendors.filter(v => { const n = normVendor(v.NAME); return n && target && (n.includes(target) || target.includes(n)); });\nconst code = ctx.location?.status === 'RESOLVED' ? ctx.location.code : null;\nif (picks.length > 1 && code) {\n  const local = picks.filter(v => String(v.VENDORID).toUpperCase().startsWith(code + '-'));\n  if (local.length) picks = local;\n}\nif (!picks.length) return fail('VENDOR_NOT_FOUND', `No active Sage vendor matches \"${ctx.vendor.name}\"`);\nif (picks.length > S.max_vendor_ids) return fail('VENDOR_AMBIGUOUS', `${picks.length} Sage vendors match \"${ctx.vendor.name}\"; too broad to reconcile`);\nif (picks.length > 1) ctx.warnings.push(`Statement checked against ${picks.length} Sage vendor IDs: ${picks.map(v => v.VENDORID).join(', ')}`);\nctx.sage_vendors = picks.map(v => ({ id: v.VENDORID, name: v.NAME }));\n\nconst ids = picks.map(v => `<value>${esc(v.VENDORID)}</value>`).join('');\nconst since = esc(ctx.stmt.sage_since);\nconst fields = f => f.map(x => `<field>${x}</field>`).join('');\nconst billFields = fields(['RECORDNO', 'RECORDID', 'VENDORID', 'DOCNUMBER', 'WHENCREATED', 'WHENDUE', 'TOTALENTERED', 'TOTALPAID', 'TOTALDUE', 'STATE']);\nconst adjFields = fields(['RECORDNO', 'RECORDID', 'VENDORID', 'DOCNUMBER', 'WHENCREATED', 'TOTALENTERED', 'TOTALDUE', 'STATE']);\nconst filt = open => `<filter><and><in><field>VENDORID</field>${ids}</in><or><greaterthanorequalto><field>WHENCREATED</field><value>${since}</value></greaterthanorequalto>${open}</or></and></filter>`;\nctx.sage_xml = sageEnvelope(ctx.sage_login_location,\n  `<function controlid=\"bills\"><query><object>APBILL</object><select>${billFields}</select>` +\n  filt(`<greaterthan><field>TOTALDUE</field><value>0</value></greaterthan>`) + `<pagesize>${S.sage_page_size}</pagesize></query></function>` +\n  `<function controlid=\"credits\"><query><object>APADJUSTMENT</object><select>${adjFields}</select>` +\n  filt(`<notequalto><field>TOTALDUE</field><value>0</value></notequalto>`) + `<pagesize>${S.sage_page_size}</pagesize></query></function>`);\nreturn [{ json: ctx }];\n"
+      }
+    },
+    {
+      "id": "808a9e60-08f7-4722-b0c3-35a39460f687",
+      "name": "Return",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        848,
+        800
+      ],
+      "parameters": {
+        "jsCode": "// Return the full context from whichever path ran.\nlet ctx = null;\ntry { ctx = $('Build Report').first().json.ctx; } catch (e) { ctx = null; }\nif (!ctx) ctx = $json;\nif (ctx.recon) {\n  ctx.draft_created = (() => { try { return !!$('Outlook Vendor Draft').first().json.id; } catch (e) { return false; } })();\n  if (ctx.draft_created) ctx.reason += '; vendor draft created';\n}\nreturn [{ json: ctx }];\n"
+      }
+    },
+    {
+      "id": "71c2ddea-1fb8-4dda-8673-de971a11facf",
+      "name": "Sage Bills & Credits",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1152,
+        560
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Build Config').first().json.cfg.GLOBAL_CONFIG.sage_gateway_url }}",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "xmlrequest",
+              "value": "={{ $json.sage_xml }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "disabled": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "e6198f19-2eb6-4a1c-a8bc-12690ee4a4c4",
+      "name": "Sage Vendor Lookup",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -2032,
+        672
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Build Config').first().json.cfg.GLOBAL_CONFIG.sage_gateway_url }}",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "xmlrequest",
+              "value": "={{ $json.sage_xml }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "7d73ea89-76c5-482b-9317-4bf11d72a1f9",
+      "name": "Start",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -3568,
+        800
+      ],
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
+      "id": "a3967cc1-332e-49d3-b6e9-59bbe2d9194d",
+      "name": "Statement OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -2688,
+        800
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "84967905-08f5-4520-974c-02c6910d4c10",
+              "leftValue": "={{ !$json.status }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "d02295ec-8b99-48e1-ba49-97e8861d686e",
+      "name": "Vendor OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1360,
+        672
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b3181fa3-5820-49c9-9665-16484557fb3a",
+              "leftValue": "={{ !$json.status }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Build Config": {
+      "main": [
+        [
+          {
+            "node": "Normalize Statement",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Report": {
+      "main": [
+        [
+          {
+            "node": "Draft to Vendor?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Vendor Query": {
+      "main": [
+        [
+          {
+            "node": "Sage Vendor Lookup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Doppler": {
+      "main": [
+        [
+          {
+            "node": "Build Vendor Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft to Vendor?": {
+      "main": [
+        [
+          {
+            "node": "Outlook Vendor Draft",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notify?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Reviewer": {
+      "main": [
+        []
+      ]
+    },
+    "Load Config": {
+      "main": [
+        [
+          {
+            "node": "Build Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Statement": {
+      "main": [
+        [
+          {
+            "node": "Statement OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify?": {
+      "main": [
+        [
+          {
+            "node": "Email Reviewer",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Outlook Vendor Draft": {
+      "main": [
+        [
+          {
+            "node": "Notify?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Bills": {
+      "main": [
+        [
+          {
+            "node": "Reconcile",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Vendor": {
+      "main": [
+        [
+          {
+            "node": "Resolve Vendor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reconcile": {
+      "main": [
+        [
+          {
+            "node": "Reconciled OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reconciled OK?": {
+      "main": [
+        [
+          {
+            "node": "Build Report",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Vendor": {
+      "main": [
+        [
+          {
+            "node": "Vendor OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sage Bills & Credits": {
+      "main": [
+        [
+          {
+            "node": "Parse Bills",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sage Vendor Lookup": {
+      "main": [
+        [
+          {
+            "node": "Parse Vendor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start": {
+      "main": [
+        [
+          {
+            "node": "Load Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Statement OK?": {
+      "main": [
+        [
+          {
+            "node": "Doppler",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vendor OK?": {
+      "main": [
+        [
+          {
+            "node": "Sage Bills & Credits",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "tags": [
+    "AP Automation",
+    "Sub-flow"
+  ]
+}
