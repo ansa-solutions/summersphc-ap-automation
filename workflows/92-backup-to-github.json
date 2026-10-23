@@ -1,0 +1,349 @@
+{
+  "id": "tnImFq62J4K8RlTY",
+  "name": "ANSA | 92. Backup to GitHub",
+  "nodes": [
+    {
+      "id": "0f8cb0a1-ea96-4d52-8381-42a6391557a3",
+      "name": "Backup Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        112
+      ],
+      "parameters": {
+        "jsCode": "// One line per file for the execution log (and for anyone checking the run).\nconst prepared = $('Prepare Files').all().map(i => i.json);\nconst committed = $('Changed Files').all().map(i => i.json);\nconst results = $input.all().map(i => i.json);\nconst blocked = prepared.filter(f => f.blocked).map(f => `${f.path}: held back (${f.findings.join(', ')})`);\nconst failed = results.filter(r => r.error || (r.statusCode && r.statusCode >= 300)).map((r, i) => `${committed[i]?.path}: ${JSON.stringify(r.error || r.body).slice(0, 200)}`);\nconst summary = { checked: prepared.length, committed: committed.map(c => `${c.action} ${c.path}`), unchanged: prepared.length - committed.length - blocked.length, blocked, failed };\nif (blocked.length || failed.length) throw new Error('GitHub backup incomplete: ' + JSON.stringify({ blocked, failed }));\nreturn [{ json: summary }];\n"
+      }
+    },
+    {
+      "id": "a683104b-5e94-4d52-b7a5-21d6e57b7f1b",
+      "name": "Build Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        112
+      ],
+      "parameters": {
+        "jsCode": "// Settings come from the summers.datastore.config.keys data table: { CATEGORY: { key: value } }.\nconst parse = v => {\n  if (v === null || v === undefined) return null;\n  const s = String(v).trim();\n  if (/^(true|false)$/i.test(s)) return s.toLowerCase() === 'true';\n  if (/^-?\\d+(\\.\\d+)?$/.test(s)) return Number(s);\n  if (/^[\\[{]/.test(s)) { try { return JSON.parse(s); } catch (e) { /* keep as text */ } }\n  return s;\n};\nconst cfg = {};\nfor (const { json: r } of $input.all()) {\n  if (!r || !r.category || !r.key) continue;\n  (cfg[r.category] ||= {})[r.key] = parse(r.value);\n}\n// Fail loudly if a required setting is missing, rather than running with a guess.\nconst REQUIRED = [\"GITHUB_CONFIG.owner\", \"GITHUB_CONFIG.repo\", \"GITHUB_CONFIG.branch\", \"GITHUB_CONFIG.workflows_path\", \"GITHUB_CONFIG.tag_filter\", \"GITHUB_CONFIG.block_on_sensitive\"];\nconst missing = REQUIRED.filter(p => { const [c, k] = p.split('.'); const v = cfg[c]?.[k]; return v === undefined || v === null || v === ''; });\nif (missing.length) throw new Error('Missing settings in summers.datastore.config.keys: ' + missing.join(', '));\nreturn [{ json: { cfg } }];\n"
+      }
+    },
+    {
+      "id": "cfb58cef-bd57-4844-ac2c-83db7b753fd9",
+      "name": "Changed Files",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1328,
+        112
+      ],
+      "parameters": {
+        "jsCode": "// Compare each prepared file with what is already in GitHub; keep only new or changed files.\nconst prepared = $('Prepare Files').all();\nconst b64 = s => Buffer.from(s, 'utf8').toString('base64');\nconst out = [];\n$input.all().forEach((it, i) => {\n  const f = prepared[i]?.json;\n  if (!f || f.blocked) return;\n  const r = it.json || {};\n  const status = r.statusCode ?? (r.body ? 200 : 404);\n  const body = r.body ?? r;\n  if (status !== 200 && status !== 404) throw new Error(`GitHub read failed for ${f.path}: HTTP ${status} ${JSON.stringify(body).slice(0, 200)}`);\n  const existing = status === 200 && body.content ? Buffer.from(String(body.content).replace(/\\n/g, ''), 'base64').toString('utf8') : null;\n  if (existing === f.content) return;                       // unchanged\n  out.push({ json: { path: f.path, name: f.name, sha: status === 200 ? body.sha : undefined,\n                     content_b64: b64(f.content), action: existing === null ? 'add' : 'update' } });\n});\nconst blocked = prepared.filter(p => p.json.blocked).map(p => `${p.json.path} (${p.json.findings.join(', ')})`);\nif (!out.length && blocked.length) throw new Error('GitHub backup: nothing to commit, but files were held back: ' + blocked.join('; '));\nreturn out;\n"
+      }
+    },
+    {
+      "id": "08e4739e-0b35-44fe-9a41-2b4b00b743f8",
+      "name": "Commit to GitHub",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1552,
+        112
+      ],
+      "parameters": {
+        "method": "PUT",
+        "url": "=https://api.github.com/repos/{{ $('Build Config').first().json.cfg.GITHUB_CONFIG.owner }}/{{ $('Build Config').first().json.cfg.GITHUB_CONFIG.repo }}/contents/{{ $json.path }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "githubApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ message: `n8n backup: ${$json.action} ${$json.name}`, content: $json.content_b64, branch: $('Build Config').first().json.cfg.GITHUB_CONFIG.branch, ...($json.sha ? { sha: $json.sha } : {}) }) }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "githubApi": {
+          "id": "XDihvxqQDjsXlfYG",
+          "name": "GitHub | summersphc-ap-automation"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "c31b6238-199b-4890-9f06-6df19d2d2ef6",
+      "name": "Get Workflows",
+      "type": "n8n-nodes-base.n8n",
+      "typeVersion": 1,
+      "position": [
+        672,
+        112
+      ],
+      "parameters": {
+        "filters": {
+          "tags": "={{ $('Build Config').first().json.cfg.GITHUB_CONFIG.tag_filter }}",
+          "excludePinnedData": true
+        },
+        "requestOptions": {}
+      },
+      "credentials": {
+        "n8nApi": {
+          "id": "9WG92CL5QZURgBUX",
+          "name": "n8n API | summersphc"
+        }
+      },
+      "executeOnce": true
+    },
+    {
+      "id": "cb2886f8-ea06-486f-873a-971bb78b3697",
+      "name": "Load Config",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        224,
+        112
+      ],
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "o7jlGvq1uEqz6zIy",
+          "mode": "list",
+          "cachedResultName": "summers.datastore.config.keys",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/o7jlGvq1uEqz6zIy"
+        },
+        "returnAll": true
+      },
+      "executeOnce": true
+    },
+    {
+      "id": "2faa73c3-5e04-4e6c-87a1-90e15a98f536",
+      "name": "Nightly 11:45 PM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "45 23 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "91859dcf-3cd0-477c-9811-6e4cad38bb32",
+      "name": "Prepare Files",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        112
+      ],
+      "parameters": {
+        "jsCode": "// Turn each n8n workflow into a clean, reviewable JSON file for the public GitHub repo.\n// Run-time fields are dropped, pinned test data is never included, and any file that looks like it\n// contains an email address or a secret is held back (and reported) instead of being published.\nconst G = $('Build Config').first().json.cfg.GITHUB_CONFIG;\nconst CONFIG = {\n  PATH: String(G.workflows_path || 'workflows').replace(/\\/+$/, ''),\n  BLOCK_ON_SENSITIVE: G.block_on_sensitive !== false,\n  EXCLUDE_TAGS: (Array.isArray(G.exclude_tags) ? G.exclude_tags : ['Test']).map(t => String(t).toLowerCase()),\n  ALLOWED_EMAIL_DOMAINS: (Array.isArray(G.allowed_email_domains) ? G.allowed_email_domains : []).map(d => String(d).toLowerCase()),\n};\nconst SENSITIVE = [\n  { what: 'email address', re: /[A-Za-z0-9._%+-]+@([A-Za-z0-9.-]+\\.[A-Za-z]{2,})/g, email: true },\n  { what: 'bearer token', re: /Bearer\\s+[A-Za-z0-9._~+\\/-]{20,}/g },\n  { what: 'private key', re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/g },\n  { what: 'GitHub token', re: /gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}/g },\n  { what: 'API key literal', re: /\"(api[_-]?key|apikey|secret|password|client_secret)\"\\s*:\\s*\"[^\"={][^\"]{7,}\"/gi },\n];\nconst slug = name => {\n  const s = String(name).replace(/^ANSA\\s*\\|\\s*/i, '');\n  const m = s.match(/^(\\d+)\\.\\s*(.*)$/);\n  const base = (m ? m[2] : s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');\n  return m ? `${m[1].padStart(2, '0')}-${base}` : base;\n};\nconst KEEP_NODE = ['id', 'name', 'type', 'typeVersion', 'position', 'parameters', 'credentials', 'disabled', 'notes', 'notesInFlow',\n                   'executeOnce', 'alwaysOutputData', 'retryOnFail', 'maxTries', 'waitBetweenTries', 'onError', 'continueOnFail', 'webhookId'];\nconst out = [];\nfor (const { json: w } of $input.all()) {\n  if (!w || !w.id || w.isArchived) continue;\n  if ((w.tags || []).some(t => CONFIG.EXCLUDE_TAGS.includes(String(t.name ?? t).toLowerCase()))) continue;   // test flows can hold real document text\n  const clean = {\n    id: w.id,\n    name: w.name,\n    nodes: (w.nodes || []).map(n => Object.fromEntries(KEEP_NODE.filter(k => n[k] !== undefined).map(k => [k, n[k]])))\n      .sort((a, b) => a.name.localeCompare(b.name)),\n    connections: Object.fromEntries(Object.entries(w.connections || {}).sort(([a], [b]) => a.localeCompare(b))),\n    settings: w.settings || {},\n    tags: (w.tags || []).map(t => t.name ?? t).sort(),\n  };\n  const text = JSON.stringify(clean, null, 2) + '\\n';\n  const findings = [];\n  for (const p of SENSITIVE) for (const m of text.matchAll(p.re)) {\n    if (p.email && CONFIG.ALLOWED_EMAIL_DOMAINS.includes(String(m[1]).toLowerCase())) continue;\n    findings.push(`${p.what}: ${m[0].slice(0, 6)}…`);\n  }\n  out.push({ json: {\n    workflow_id: w.id, name: w.name, path: `${CONFIG.PATH}/${slug(w.name)}.json`,\n    content: text, blocked: CONFIG.BLOCK_ON_SENSITIVE && findings.length > 0, findings: [...new Set(findings)],\n  } });\n}\nif (!out.length) throw new Error('No workflows returned by the n8n API for the configured tag; nothing to back up');\nreturn out.sort((a, b) => a.json.path.localeCompare(b.json.path));\n"
+      }
+    },
+    {
+      "id": "404e0663-214a-4c42-86d9-014c1e3d436f",
+      "name": "Read From GitHub",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1104,
+        112
+      ],
+      "parameters": {
+        "url": "=https://api.github.com/repos/{{ $('Build Config').first().json.cfg.GITHUB_CONFIG.owner }}/{{ $('Build Config').first().json.cfg.GITHUB_CONFIG.repo }}/contents/{{ $json.path }}?ref={{ $('Build Config').first().json.cfg.GITHUB_CONFIG.branch }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "githubApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            }
+          ]
+        },
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 5,
+              "batchInterval": 500
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "githubApi": {
+          "id": "XDihvxqQDjsXlfYG",
+          "name": "GitHub | summersphc-ap-automation"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "0742777b-c971-4505-b773-85bb267ea5d9",
+      "name": "Run Now",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        208
+      ],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Build Config": {
+      "main": [
+        [
+          {
+            "node": "Get Workflows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Changed Files": {
+      "main": [
+        [
+          {
+            "node": "Commit to GitHub",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Commit to GitHub": {
+      "main": [
+        [
+          {
+            "node": "Backup Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Workflows": {
+      "main": [
+        [
+          {
+            "node": "Prepare Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Config": {
+      "main": [
+        [
+          {
+            "node": "Build Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Nightly 11:45 PM": {
+      "main": [
+        [
+          {
+            "node": "Load Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Files": {
+      "main": [
+        [
+          {
+            "node": "Read From GitHub",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read From GitHub": {
+      "main": [
+        [
+          {
+            "node": "Changed Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Now": {
+      "main": [
+        [
+          {
+            "node": "Load Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "tags": [
+    "AP Automation",
+    "Scheduled"
+  ]
+}
