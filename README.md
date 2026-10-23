@@ -15,7 +15,7 @@ Accounts-payable automation built by ANSA Solutions on n8n. Vendor invoices and 
 | 07 | Statement Reconciliation | Reconciles vendor statements against open bills and credits in Sage. |
 | 11 | Daily Report | Emails the previous day's processing report. |
 | 12 | Sync Reference Data | Copies the reference Google Sheet into the n8n data tables (Tue–Sat). |
-| 92 | Backup to GitHub | Commits every flow tagged `AP Automation` to this repo nightly. |
+| 92 | Backup to GitHub | Commits every flow tagged `AP Automation` to this repo weekly (Sundays). |
 
 ## Design rules
 
@@ -38,4 +38,4 @@ In n8n: **Workflows → Import from file**, choose the JSON from `workflows/`, t
 
 ## Contributing
 
-`main` mirrors what is running in n8n (flow 92 commits nightly and on demand). For a larger change, export the flow, commit it on a branch, and open a pull request for review before importing it into n8n.
+`main` mirrors what is running in n8n (flow 92 commits weekly on Sundays and on demand). For a larger change, export the flow, commit it on a branch, and open a pull request for review before importing it into n8n.

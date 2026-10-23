@@ -1,7 +1,7 @@
 # Backup and restore
 
 ## How the backup works (flow 92)
-1. Runs nightly at 11:45 PM, or on demand with **Run Now**.
+1. Runs every Sunday at 11:45 PM (Indianapolis time), or on demand with **Run Now**.
 2. Reads every workflow tagged `AP Automation` through the n8n API (pinned test data excluded) and skips flows tagged `Test`.
 3. Keeps only what is needed to rebuild a flow (nodes, connections, settings, tags) and sorts nodes by name so diffs stay readable.
 4. Scans each file for email addresses and secret-like values. Any hit holds that file back and fails the run, so nothing sensitive reaches this public repo.
