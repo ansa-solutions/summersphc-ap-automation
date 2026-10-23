@@ -1,0 +1,705 @@
+{
+  "id": "koP058FMmqYx6kQu",
+  "name": "ANSA | 02. Direct Invoice (PO)",
+  "nodes": [
+    {
+      "id": "43448242-9f98-42e0-863c-ff1c098c09f7",
+      "name": "After Price Update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const ctx = JSON.parse(JSON.stringify($('Match PO').first().json));\nconst r = $input.first()?.json ?? {};\nif (r.error) {\n  ctx.status = 'PO_PRICE_UPDATE_FAILED';\n  ctx.reason = `ServiceTitan PO update failed: ${typeof r.error === 'string' ? r.error : (r.error.message || JSON.stringify(r.error))}`;\n} else {\n  ctx.status = 'READY_TO_POST';\n  ctx.payload = ctx.pending_payload;\n  ctx.warnings.push(`PO ${ctx.st_po.number} priced in ServiceTitan from the invoice`);\n}\ndelete ctx.pending_payload;\ndelete ctx.st_patch_body;\nreturn [{ json: ctx }];\n"
+      }
+    },
+    {
+      "id": "c9f153ae-58cf-43b3-8444-b9b954e5e0c9",
+      "name": "Build Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2912,
+        144
+      ],
+      "parameters": {
+        "jsCode": "// Settings come from the summers.datastore.config.keys data table: { CATEGORY: { key: value } }.\nconst parse = v => {\n  if (v === null || v === undefined) return null;\n  const s = String(v).trim();\n  if (/^(true|false)$/i.test(s)) return s.toLowerCase() === 'true';\n  if (/^-?\\d+(\\.\\d+)?$/.test(s)) return Number(s);\n  if (/^[\\[{]/.test(s)) { try { return JSON.parse(s); } catch (e) { /* keep as text */ } }\n  return s;\n};\nconst cfg = {};\nfor (const { json: r } of $input.all()) {\n  if (!r || !r.category || !r.key) continue;\n  (cfg[r.category] ||= {})[r.key] = parse(r.value);\n}\n// Fail loudly if a required setting is missing, rather than running with a guess.\nconst REQUIRED = [\"GLOBAL_CONFIG.st_api_base\", \"GLOBAL_CONFIG.st_auth_url\", \"GLOBAL_CONFIG.extraction_endpoint\", \"GLOBAL_CONFIG.glm_extraction_model\", \"GLOBAL_CONFIG.glm_lines_max_tokens\", \"INV_PROC_CONFIG.validation_tolerance\", \"INV_PROC_CONFIG.line_price_tolerance\", \"INV_PROC_CONFIG.allow_st_price_update\", \"INV_PROC_CONFIG.vendor_match_stopwords\"];\nconst missing = REQUIRED.filter(p => { const [c, k] = p.split('.'); const v = cfg[c]?.[k]; return v === undefined || v === null || v === ''; });\nif (missing.length) throw new Error('Missing settings in summers.datastore.config.keys: ' + missing.join(', '));\nreturn [{ json: { cfg } }];\n"
+      }
+    },
+    {
+      "id": "e12340d6-a4b3-4b0d-8dce-e478700f009e",
+      "name": "Department Code",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        -672,
+        80
+      ],
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "ZF2Q8mU9KnZd3RH9",
+          "mode": "list",
+          "cachedResultName": "Department_Code",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/ZF2Q8mU9KnZd3RH9"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "business_unit_id",
+              "keyValue": "={{ String($('Evaluate PO').first().json.st_po.businessUnitId) }}"
+            }
+          ]
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "decccf22-82c8-415d-81e9-e5041b48481e",
+      "name": "Evaluate PO",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2016,
+        144
+      ],
+      "parameters": {
+        "jsCode": "// Pick exactly one ServiceTitan PO.\nconst ctx = JSON.parse(JSON.stringify($('Start').first().json));\nconst resp = $input.first()?.json ?? {};\nconst exc = (s, r) => { ctx.status = s; ctx.reason = r; return [{ json: ctx }]; };\nif (resp.error) return exc('ST_API_ERROR', `ServiceTitan PO lookup failed: ${typeof resp.error === 'string' ? resp.error : (resp.error.message || JSON.stringify(resp.error))}`);\n\nconst list = Array.isArray(resp.data) ? resp.data : [];\nconst search = String(ctx.po.st_search_number || '').toUpperCase();\nconst exact = list.filter(p => String(p.number || '').toUpperCase() === search);\nconst pool = exact.length ? exact : list;\nif (!pool.length) return exc('PO_NOT_FOUND', `PO ${ctx.po.raw} (searched ${search}) not found in ServiceTitan`);\nif (pool.length > 1) return exc('PO_AMBIGUOUS', `${pool.length} ServiceTitan POs match ${search}: ${pool.map(p => p.number).join(', ')}`);\nconst po = pool[0];\nif (/cancel/i.test(String(po.status || ''))) return exc('PO_CANCELED', `PO ${po.number} is ${po.status} in ServiceTitan`);\nctx.st_po = po;\nreturn [{ json: ctx }];\n"
+      }
+    },
+    {
+      "id": "bade4cd8-c303-4a02-9bd9-bce23c0a95ee",
+      "name": "Extract Lines (GLM)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1568,
+        80
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Build Config').first().json.cfg.GLOBAL_CONFIG.extraction_endpoint }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "={{ $('Build Config').first().json.cfg.GLOBAL_CONFIG.glm_extraction_model }}"
+            },
+            {
+              "name": "max_tokens",
+              "value": "={{ $('Build Config').first().json.cfg.GLOBAL_CONFIG.glm_lines_max_tokens }}"
+            },
+            {
+              "name": "temperature",
+              "value": "={{ 0 }}"
+            },
+            {
+              "name": "response_format",
+              "value": "={{ {\"type\": \"json_object\"} }}"
+            },
+            {
+              "name": "messages",
+              "value": "={{ [ { role: 'system', content: \"Return ONLY valid JSON. No markdown, no code fences, no commentary.\\n\\nYou are an accounts-payable document reader. Transcribe values exactly as printed. Do not infer, classify, derive codes, calculate, or guess. If a value is not printed, use null.\\n\\nThis is STAGE 2: list the LINE ITEMS of ONE invoice. The PDF may contain several invoices; use only the rows that belong to the invoice number given by the user, and ignore every other invoice.\\n\\nLINE ITEMS\\n- Product and service rows only. Never subtotal, tax, freight, shipping, discount, total, previous balance, payments, or balance forward rows.\\n- Text extracted from a PDF often lists table columns vertically. Rebuild the original rows: the Nth item number goes with the Nth description, quantity, unit price and amount.\\n- Never merge two rows. Never concatenate SKUs, quantities, descriptions or amounts from different rows. A description that wraps across lines under one SKU is one row.\\n- sku: the vendor item / part / product number printed on the row.\\n- quantity is the shipped or invoiced quantity when both ordered and shipped are shown.\\n- Copy unit_price and amount as printed; never calculate them. Money: write every amount as a JSON string of digits and one decimal point, no currency symbols or commas, negative amounts start with a minus sign. Copy exactly as printed. Unreadable values are null.\\n- Include every product and service row of that invoice.\\n\\nOUTPUT exactly: {\\\"invoice_number\\\": null, \\\"line_items\\\": [{\\\"sku\\\": null, \\\"description\\\": null, \\\"quantity\\\": null, \\\"unit_price\\\": null, \\\"amount\\\": null} ] }\" },\n  { role: 'user', content:\n      'Invoice number: ' + ($('Evaluate PO').first().json.invoice?.invoice_number ?? '') +\n      '\\nPO number: ' + ($('Evaluate PO').first().json.invoice?.po_number_raw ?? '') +\n      '\\nInvoice total: ' + ($('Evaluate PO').first().json.invoice?.invoice_total ?? '') +\n      '\\n\\nPDF text:\\n' + ($('Evaluate PO').first().json.source_text ?? '') }\n] }}"
+            },
+            {
+              "name": "thinking",
+              "value": "={{ {\"type\": \"disabled\"} }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "Sj39ZbxmWxCZ8r7T",
+          "name": "Z.ai GLM Account"
+        }
+      },
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "79c96ef0-487d-4c3e-8c97-d8189f172a86",
+      "name": "Lines OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1120,
+        80
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ad2a9d53-47bb-4bc4-a90e-ff384e4162ae",
+              "leftValue": "={{ !$json.status }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "b9977c0e-4298-49a7-a283-26a400c308f9",
+      "name": "Load Config",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        -3136,
+        144
+      ],
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "o7jlGvq1uEqz6zIy",
+          "mode": "list",
+          "cachedResultName": "summers.datastore.config.keys",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/o7jlGvq1uEqz6zIy"
+        },
+        "returnAll": true
+      },
+      "executeOnce": true
+    },
+    {
+      "id": "8bdf325f-a292-44b1-a3a2-0236a4b69e04",
+      "name": "Match PO",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -448,
+        80
+      ],
+      "parameters": {
+        "jsCode": "const LEGAL_SUFFIXES = /\\b(incorporated|llc|l\\.l\\.c|inc|corp|corporation|co|company|ltd|limited|llp|lp|enterprises?|facilit(?:y|ies)|industries|international|the)\\b/g;\nfunction normVendor(raw) {\n  if (!raw) return '';\n  return String(raw).toLowerCase()\n    .replace(/&/g, ' and ')\n    .replace(/[.,\\/#!$%\\^*;:{}=\\-_`~()'\"]/g, ' ')\n    .replace(LEGAL_SUFFIXES, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\n// Two-way match: vendor, location, quantity, total. Builds the Sage payload.\nconst I = $('Build Config').first().json.cfg.INV_PROC_CONFIG;\nconst CONFIG = {\n  TOTAL_TOLERANCE: I.validation_tolerance,\n  LINE_PRICE_TOLERANCE: I.line_price_tolerance,       // per-unit difference reported as a price variance\n  ALLOW_ST_PRICE_UPDATE: I.allow_st_price_update === true,   // turn on only with 'ST Update PO Price'\n    DEPT_COLS: { department: 'department_code', location: 'location_code' },\n};\nconst ctx = JSON.parse(JSON.stringify($('Parse Lines').first().json));   // has the stage-2 line items\nconst po = ctx.st_po;\nconst inv = ctx.invoice;\nconst round2 = n => Math.round(n * 100) / 100;\nconst key = s => String(s ?? '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();\nconst exc = (s, r) => { ctx.status = s; ctx.reason = r; return [{ json: ctx }]; };\n\nconst vendorResp = $('ST Get Vendor').first()?.json ?? {};\nconst deptRow = $input.all().map(i => i.json).find(r => r && Object.keys(r).length && !r.error) || null;\nconst checks = {};\n\n// Vendor\nconst stVendorName = vendorResp.error ? null : (vendorResp.name ?? vendorResp.data?.name ?? null);\nif (!stVendorName) {\n  checks.vendor = { result: 'SKIPPED', detail: 'ServiceTitan vendor name unavailable' };\n} else if (!ctx.vendor?.name) {\n  // Some invoices print no vendor name (logo only); the PO's vendor is the authoritative one.\n  ctx.vendor = { ...(ctx.vendor || {}), name: stVendorName };\n  checks.vendor = { result: 'PASS', detail: `Vendor name not printed on invoice; using ServiceTitan PO vendor \"${stVendorName}\"` };\n  (ctx.warnings ||= []).push(checks.vendor.detail);\n} else {\n  const a = normVendor(stVendorName), b = normVendor(ctx.vendor?.name);\n  // Exact/contained names pass; otherwise every word of the shorter name must appear in the longer one\n  // (handles \"Johnstone Supply Indianapolis West\" vs \"Johnstone Indianapolis West\").\n  const STOP = new Set((I.vendor_match_stopwords || []).map(w => String(w).toLowerCase()));\n  const words = s => s.split(' ').filter(w => w.length > 1 && !STOP.has(w));\n  const [sw, lw] = words(a).length <= words(b).length ? [words(a), new Set(words(b))] : [words(b), new Set(words(a))];\n  const exact = a && b && (a === b || a.includes(b) || b.includes(a));\n  const fuzzy = !exact && sw.length > 0 && sw.every(w => lw.has(w));\n  checks.vendor = { result: exact || fuzzy ? 'PASS' : 'FAIL',\n                    detail: `ServiceTitan \"${stVendorName}\" vs invoice \"${ctx.vendor?.name}\"${fuzzy ? ' (word match)' : ''}` };\n}\n\n// Location: PO business unit's location vs resolved invoice location\nconst deptLoc = deptRow ? String(deptRow[CONFIG.DEPT_COLS.location] ?? '').trim().toUpperCase() : '';\nchecks.location = deptLoc\n  ? { result: deptLoc === ctx.location.code ? 'PASS' : 'FAIL', detail: `PO business unit ${po.businessUnitId} is ${deptLoc}; invoice resolved to ${ctx.location.code}` }\n  : { result: 'SKIPPED', detail: 'No location code for this business unit in the Department Code sheet' };\n\nconst department = deptRow ? (String(deptRow[CONFIG.DEPT_COLS.department] ?? '').trim() || null) : null;\nif (!department) ctx.warnings.push(`No department code for business unit ${po.businessUnitId}`);\n\n// Quantity: invoiced must not exceed ordered (partial shipments are fine)\nconst poItems = Array.isArray(po.items) ? po.items : [];\nconst lineFor = it => (inv.line_items || []).find(l => key(l.sku) && [it.vendorPartNumber, it.skuCode, it.skuName].some(v => key(v) === key(l.sku)));\nconst qtyIssues = [];\nfor (const it of poItems) {\n  const l = lineFor(it);\n  if (l && l.quantity != null && it.quantity != null && Number(l.quantity) > Number(it.quantity)) qtyIssues.push(`${l.sku}: invoiced ${l.quantity} > PO ${it.quantity}`);\n}\nchecks.quantity = qtyIssues.length ? { result: 'FAIL', detail: qtyIssues.join('; ') } : { result: 'PASS' };\n\n// Total: gross or net (ex tax/freight) within tolerance\nconst tol = CONFIG.TOTAL_TOLERANCE;\nconst poTotal = Number(po.total ?? 0);\nconst invTotal = Number(inv.invoice_total ?? 0);\nconst invNet = inv.subtotal ?? round2(invTotal - (inv.tax ?? 0) - (inv.freight ?? 0));\nconst poNet = round2(poTotal - Number(po.tax ?? 0) - Number(po.shipping ?? 0));\nchecks.total = poTotal === 0\n  ? { result: 'ZERO_PO', detail: 'PO has no price; will be updated from the invoice' }\n  : { result: (Math.abs(poTotal - invTotal) <= tol || Math.abs(poNet - invNet) <= tol) ? 'PASS' : 'FAIL',\n      detail: `PO ${poTotal} (net ${poNet}) vs invoice ${invTotal} (net ${invNet})` };\nctx.match_checks = checks;\n\n// Line-level variance (for the Daily Report and the reviewer email)\nconst num = v => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v))) ? null : Number(v);\nconst used = new Set();\nconst variance = [];\nfor (const it of poItems) {\n  const l = lineFor(it);\n  if (l) used.add(l);\n  const poQty = num(it.quantity), poUnit = num(it.cost);\n  const invQty = l ? num(l.quantity) : null;\n  const invUnit = l ? (num(l.unit_price) ?? (num(l.amount) !== null && invQty ? round2(l.amount / invQty) : null)) : null;\n  const poExt = poQty !== null && poUnit !== null ? round2(poQty * poUnit) : null;\n  const invExt = l ? (num(l.amount) ?? (invQty !== null && invUnit !== null ? round2(invQty * invUnit) : null)) : null;\n  let st = 'OK';\n  if (!l) st = 'NOT_INVOICED';\n  else if (poUnit === 0) st = 'PO_UNPRICED';\n  else if (invQty !== null && poQty !== null && invQty > poQty) st = 'QTY_OVER';\n  else if (invUnit !== null && poUnit !== null && poUnit !== 0 && Math.abs(invUnit - poUnit) > CONFIG.LINE_PRICE_TOLERANCE) st = 'PRICE_DIFF';\n  variance.push({ sku: l?.sku ?? it.vendorPartNumber ?? it.skuCode ?? it.skuName ?? null, description: it.description ?? it.skuName ?? l?.description ?? null,\n                  po_qty: poQty, inv_qty: invQty, po_unit: poUnit, inv_unit: invUnit, po_ext: poExt, inv_ext: invExt,\n                  diff: poExt !== null && invExt !== null ? round2(invExt - poExt) : null, status: st });\n}\nfor (const l of (inv.line_items || [])) {\n  if (used.has(l)) continue;\n  variance.push({ sku: l.sku, description: l.description, po_qty: null, inv_qty: num(l.quantity), po_unit: null, inv_unit: num(l.unit_price),\n                  po_ext: null, inv_ext: num(l.amount), diff: num(l.amount), status: 'NOT_ON_PO' });\n}\nctx.variance_lines = variance;\nctx.variance_amount = poTotal === 0 ? null : round2(invTotal - poTotal);\n\n// Hard failures first\nconst order = [['vendor', 'PO_VENDOR_MISMATCH'], ['location', 'PO_LOCATION_MISMATCH'], ['quantity', 'PO_QTY_MISMATCH'], ['total', 'PO_PRICE_MISMATCH']];\nconst failed = order.filter(([k]) => checks[k].result === 'FAIL');\nif (failed.length) return exc(failed[0][1], failed.map(([k]) => `${k}: ${checks[k].detail}`).join(' | '));\n\n// Sage payload (the dominant PO item drives the GL)\nconst sorted = [...poItems].sort((a, b) => (Number(b.quantity ?? 0) * Number(b.cost ?? 0)) - (Number(a.quantity ?? 0) * Number(a.cost ?? 0)));\nconst payload = {\n  location_id: ctx.location.entity_id,\n  line_location_id: ctx.location.sage_location_id || ctx.location.entity_id,\n  vendor: { sage_vendor_id: null, name: ctx.vendor.name, location_code: ctx.location.code },\n  bill: { record_id: inv.invoice_number, doc_number: po.number || ctx.po.normalized,\n          when_created: inv.invoice_date, when_due: inv.due_date, term: inv.payment_terms,\n          description: `${ctx.vendor.name} ${inv.invoice_number} / PO ${po.number}` },\n  lines: [{ amount: invTotal, gl_account: null, item_names: [...new Set(sorted.map(it => it.skuName).filter(Boolean))],\n            department, memo: `Invoice ${inv.invoice_number} / PO ${po.number}` }],\n};\n\n// Zero-priced PO: price it from the invoice, then post\nif (poTotal === 0 && !CONFIG.ALLOW_ST_PRICE_UPDATE) {\n  return exc('PO_PRICE_UPDATE_REVIEW', `PO ${po.number} has no prices in ServiceTitan; automatic price update is switched off`);\n}\nif (poTotal === 0) {\n  const items = [];\n  for (const it of poItems) {\n    const l = lineFor(it);\n    let cost = null;\n    if (l) cost = l.unit_price ?? (l.amount != null && l.quantity ? l.amount / l.quantity : null);\n    else if (poItems.length === 1 && Number(it.quantity)) cost = invNet / Number(it.quantity);\n    if (cost === null) return exc('PO_PRICE_UPDATE_REVIEW', `Cannot price PO item ${it.skuName || it.id} from the invoice lines`);\n    items.push({ id: it.id, skuId: it.skuId, description: it.description, vendorPartNumber: it.vendorPartNumber,\n                 quantity: it.quantity, cost: Math.round(cost * 10000) / 10000, budgetCodeId: it.budgetCodeId ?? null });\n  }\n  if (!items.length) return exc('PO_PRICE_UPDATE_REVIEW', 'PO has no items to price');\n  const s = po.shipTo || {};\n  ctx.st_patch_body = {\n    vendorId: po.vendorId, typeId: po.typeId, businessUnitId: po.businessUnitId, inventoryLocationId: po.inventoryLocationId,\n    jobId: po.jobId, projectId: po.projectId, vendorInvoiceNumber: inv.invoice_number, memo: po.memo ?? '',\n    date: po.date, requiredOn: po.requiredOn, tax: inv.tax ?? po.tax ?? 0, shipping: inv.freight ?? po.shipping ?? 0,\n    shipTo: { description: s.description ?? '', address: { street: s.street ?? '', unit: s.unit ?? '', city: s.city ?? '', state: s.state ?? '', zip: s.zip ?? '', country: s.country ?? 'US' } },\n    items,\n  };\n  ctx.pending_payload = payload;\n  ctx.status = 'PRICE_UPDATE';\n  return [{ json: ctx }];\n}\n\nctx.status = 'READY_TO_POST';\nctx.payload = payload;\nreturn [{ json: ctx }];\n"
+      }
+    },
+    {
+      "id": "1eb4ad35-5267-4ec0-ab79-b7244a47d672",
+      "name": "Parse Lines",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1344,
+        80
+      ],
+      "parameters": {
+        "jsCode": "// Stage 2: parse the line items for this one invoice and attach them to the context.\nconst CONFIG = { REQUIRE_LINES: true };\nconst ctx = JSON.parse(JSON.stringify($('Evaluate PO').first().json));\nctx.warnings = ctx.warnings || [];\nconst TOL = $('Build Config').first().json.cfg.INV_PROC_CONFIG.validation_tolerance;\nconst resp = $input.first()?.json ?? {};\nconst round2 = n => Math.round(n * 100) / 100;\n\n/*\n * Strict amount parser: accepts JSON numbers and printed amounts (1,234.56  -234.89  (234.89)  234.89-  $1,234.56).\n * Anything else is REJECTED (bad = true), never \"cleaned up\", so a corrupted token such as \"-234.!89!!89\"\n * can no longer become -234.8989.\n */\nconst AMOUNT_RE = /^(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?$|^\\.\\d+$/;\nfunction parseAmount(v) {\n  if (v === null || v === undefined || v === '') return { value: null, bad: false };\n  if (typeof v === 'number') return Number.isFinite(v) ? { value: v, bad: false } : { value: null, bad: true };\n  let s = String(v).trim(), neg = false;\n  if (!s) return { value: null, bad: false };\n  if (/^\\(.*\\)$/.test(s)) { neg = true; s = s.slice(1, -1).trim(); }\n  if (/-$/.test(s)) { neg = true; s = s.slice(0, -1).trim(); }\n  if (/^[-\\u2212\\u2013]/.test(s)) { neg = true; s = s.slice(1).trim(); }\n  s = s.replace(/^[$\\u20AC\\u00A3]\\s*/, '');\n  if (!AMOUNT_RE.test(s)) return { value: null, bad: true };\n  const n = Number(s.replace(/,/g, ''));\n  return Number.isFinite(n) ? { value: neg ? -n : n, bad: false } : { value: null, bad: true };\n}\nfunction buildSrcCents(text) {\n  const set = new Set();\n  const add = s => { const n = Number(s); if (Number.isFinite(n)) set.add(Math.round(n * 100)); };\n  for (const t of String(text).match(/\\d[\\d,]*(?:\\.\\d+)?|\\.\\d+/g) || []) {\n    add(t.replace(/,/g, ''));\n    // PDF text extraction can glue two numbers together (quantity 3 + price 149.99 -> 3149.99).\n    // For a decimal token with no thousands separators and 4+ integer digits, also accept its trailing digit groups.\n    const m = t.match(/^(\\d{4,})(\\.\\d+)$/);\n    if (m) for (let i = 1; i < m[1].length; i++) add(m[1].slice(i) + m[2]);\n  }\n  return set;\n}\nconst srcCents = buildSrcCents(ctx.source_text || '');\nlet badAmounts = 0;\nconst num = v => { const r = parseAmount(v); if (r.bad) badAmounts++; return r.value; };\n// Prices and amounts must also appear in the document text.\nconst amt = v => {\n  const r = parseAmount(v);\n  if (r.bad) { badAmounts++; return null; }\n  if (r.value !== null && r.value !== 0 && !srcCents.has(Math.round(Math.abs(r.value) * 100))) badAmounts++;\n  return r.value;\n};\nfunction parse(r) {\n  if (!r || r.error) return { error: 'Line-item LLM request failed' + (r?.error ? ': ' + (r.error.message || JSON.stringify(r.error)) : '') };\n  const ch = r.choices?.[0];\n  if (ch?.finish_reason === 'length') return { error: 'Line-item output truncated (finish_reason=length); raise glm_lines_max_tokens' };\n  if (ch?.finish_reason !== undefined && ch?.finish_reason !== null && ch.finish_reason !== 'stop') return { error: `Line-item LLM did not finish normally (finish_reason=${ch.finish_reason})` };\n  const raw = ch?.message?.content;\n  if (!raw) return { error: 'Line-item LLM returned empty content' };\n  const cleaned = String(raw).replace(/^```(?:json)?\\s*/i, '').replace(/\\s*```\\s*$/, '').trim();\n  try { return { data: JSON.parse(cleaned) }; } catch (e) {\n    const a = cleaned.indexOf('{'), b = cleaned.lastIndexOf('}');\n    if (a >= 0 && b > a) { try { return { data: JSON.parse(cleaned.slice(a, b + 1)) }; } catch (e2) {} }\n    return { error: 'Could not parse line-item JSON: ' + e.message };\n  }\n}\nconst p = parse(resp);\nif (p.error) {\n  ctx.line_count = 0;\n  if (CONFIG.REQUIRE_LINES) { ctx.status = 'EXTRACTION_FAILED'; ctx.reason = p.error; }\n  else ctx.warnings.push(p.error + ' (continuing without line items)');\n  return [{ json: ctx }];\n}\nconst lines = (Array.isArray(p.data?.line_items) ? p.data.line_items : [])\n  .map(li => ({ sku: li?.sku ?? null, description: li?.description ?? null, quantity: num(li?.quantity), unit_price: amt(li?.unit_price), amount: amt(li?.amount) }))\n  .filter(l => l.sku || l.description || l.amount !== null);\nconst inv = ctx.invoice;\nif (badAmounts) {\n  inv.line_items = [];\n  ctx.line_count = 0;\n  const msg = `${badAmounts} line amount(s) unreadable or not in the document; line items discarded`;\n  if (CONFIG.REQUIRE_LINES) { ctx.status = 'EXTRACTION_FAILED'; ctx.reason = msg; }\n  else ctx.warnings.push(msg);\n  return [{ json: ctx }];\n}\ninv.line_items = lines;\nctx.line_count = lines.length;\nfor (const l of lines) {\n  if (l.quantity !== null && l.unit_price !== null && l.amount !== null && Math.abs(round2(l.quantity * l.unit_price) - l.amount) > TOL)\n    ctx.warnings.push(`Line ${l.sku ?? l.description}: qty x price != amount`);\n}\nconst priced = lines.filter(l => l.amount !== null);\nconst lineSum = round2(priced.reduce((s, l) => s + l.amount, 0));\nif (priced.length && inv.subtotal !== null && inv.subtotal !== undefined &&\n    Math.abs(lineSum - inv.subtotal) > TOL && Math.abs(lineSum + (inv.freight ?? 0) - inv.subtotal) > TOL)\n  ctx.warnings.push(`Line items sum ${lineSum} != subtotal ${inv.subtotal}`);\nif (!lines.length) {\n  if (CONFIG.REQUIRE_LINES) { ctx.status = 'EXTRACTION_FAILED'; ctx.reason = `No line items found for invoice ${inv.invoice_number}`; }\n  else ctx.warnings.push('No line items found');\n}\nreturn [{ json: ctx }];\n"
+      }
+    },
+    {
+      "id": "60371f2c-3c9e-4be6-a8d0-53ba17f5df7c",
+      "name": "PO Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1792,
+        144
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "21965511-881d-4fde-9ee1-8bfe9c6e75ec",
+              "leftValue": "={{ !$json.status }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "a32e592d-390c-47f0-8b62-a441d59a9147",
+      "name": "Price Update Needed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -224,
+        80
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "fe2f320d-5d76-484a-bdf7-3d29c691e121",
+              "leftValue": "={{ $json.status === 'PRICE_UPDATE' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "54a31555-fabd-41de-8d65-0561e72e9d4b",
+      "name": "Return",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        448,
+        144
+      ],
+      "parameters": {},
+      "notesInFlow": true
+    },
+    {
+      "id": "8ff0d806-13bb-4041-884b-79147fa288a6",
+      "name": "ST Get PO",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -2240,
+        144
+      ],
+      "parameters": {
+        "url": "={{ $('ST Settings').first().json.api_base }}/inventory/v2/tenant/{{ $('Start').first().json.location.st_tenant_id }}/purchase-orders?number={{ encodeURIComponent($('Start').first().json.po.st_search_number) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('ST Token').first().json.access_token }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "Ni0WwZ4E73uQENPP",
+          "name": "Service Titan Key - Prod"
+        }
+      },
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "97089e71-9953-4f6e-b1e9-319de5e71e97",
+      "name": "ST Get Vendor",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -896,
+        80
+      ],
+      "parameters": {
+        "url": "={{ $('ST Settings').first().json.api_base }}/inventory/v2/tenant/{{ $('Start').first().json.location.st_tenant_id }}/vendors/{{ $json.st_po.vendorId }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('ST Token').first().json.access_token }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "Ni0WwZ4E73uQENPP",
+          "name": "Service Titan Key - Prod"
+        }
+      },
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "0ea13e40-80e6-4273-a93f-c914676e513c",
+      "name": "ST Settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -2688,
+        144
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "87908a62-f7e1-402b-9adb-0c61d22de262",
+              "name": "api_base",
+              "type": "string",
+              "value": "={{ $('Build Config').first().json.cfg.GLOBAL_CONFIG.st_api_base }}"
+            },
+            {
+              "id": "f3a7413e-3553-42a3-b889-ad23baefa3fc",
+              "name": "auth_url",
+              "type": "string",
+              "value": "={{ $('Build Config').first().json.cfg.GLOBAL_CONFIG.st_auth_url }}"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "4fb07087-b893-4e30-add0-bf8fd1295c2f",
+      "name": "ST Token",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -2464,
+        144
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.auth_url }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-www-form-urlencoded"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "QlJFhiE58cDaoVTo",
+          "name": "Service Titan Auth - PROD"
+        }
+      },
+      "retryOnFail": true
+    },
+    {
+      "id": "97a8a0fd-9254-4e60-a0a6-766b84b1888b",
+      "name": "ST Update PO Price",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('ST Settings').first().json.api_base }}/inventory/v2/tenant/{{ $('Start').first().json.location.st_tenant_id }}/purchase-orders/{{ $json.st_po.id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('ST Token').first().json.access_token }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.st_patch_body) }}",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "Ni0WwZ4E73uQENPP",
+          "name": "Service Titan Key - Prod"
+        }
+      },
+      "disabled": true,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "e5b892f3-1030-485e-8363-4f3005305c5f",
+      "name": "Start",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -3360,
+        144
+      ],
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    }
+  ],
+  "connections": {
+    "After Price Update": {
+      "main": [
+        [
+          {
+            "node": "Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Config": {
+      "main": [
+        [
+          {
+            "node": "ST Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Department Code": {
+      "main": [
+        [
+          {
+            "node": "Match PO",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate PO": {
+      "main": [
+        [
+          {
+            "node": "PO Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Lines (GLM)": {
+      "main": [
+        [
+          {
+            "node": "Parse Lines",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lines OK?": {
+      "main": [
+        [
+          {
+            "node": "ST Get Vendor",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Config": {
+      "main": [
+        [
+          {
+            "node": "Build Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Match PO": {
+      "main": [
+        [
+          {
+            "node": "Price Update Needed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Lines": {
+      "main": [
+        [
+          {
+            "node": "Lines OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PO Found?": {
+      "main": [
+        [
+          {
+            "node": "Extract Lines (GLM)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Price Update Needed?": {
+      "main": [
+        [
+          {
+            "node": "ST Update PO Price",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ST Get PO": {
+      "main": [
+        [
+          {
+            "node": "Evaluate PO",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ST Get Vendor": {
+      "main": [
+        [
+          {
+            "node": "Department Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ST Settings": {
+      "main": [
+        [
+          {
+            "node": "ST Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ST Token": {
+      "main": [
+        [
+          {
+            "node": "ST Get PO",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ST Update PO Price": {
+      "main": [
+        [
+          {
+            "node": "After Price Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start": {
+      "main": [
+        [
+          {
+            "node": "Load Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "tags": [
+    "AP Automation",
+    "Sub-flow"
+  ]
+}
