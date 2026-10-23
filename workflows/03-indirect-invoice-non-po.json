@@ -1,0 +1,178 @@
+{
+  "id": "VpZFxjCV8mSgmaIX",
+  "name": "ANSA | 03. Indirect Invoice (Non-PO)",
+  "nodes": [
+    {
+      "id": "2df06eee-3813-4163-8d09-1b85c86ec97b",
+      "name": "Build Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1232,
+        -256
+      ],
+      "parameters": {
+        "jsCode": "// Settings come from the summers.datastore.config.keys data table: { CATEGORY: { key: value } }.\nconst parse = v => {\n  if (v === null || v === undefined) return null;\n  const s = String(v).trim();\n  if (/^(true|false)$/i.test(s)) return s.toLowerCase() === 'true';\n  if (/^-?\\d+(\\.\\d+)?$/.test(s)) return Number(s);\n  if (/^[\\[{]/.test(s)) { try { return JSON.parse(s); } catch (e) { /* keep as text */ } }\n  return s;\n};\nconst cfg = {};\nfor (const { json: r } of $input.all()) {\n  if (!r || !r.category || !r.key) continue;\n  (cfg[r.category] ||= {})[r.key] = parse(r.value);\n}\n// Fail loudly if a required setting is missing, rather than running with a guess.\nconst REQUIRED = [\"INV_PROC_CONFIG.validation_tolerance\", \"INV_PROC_CONFIG.indirect_require_confirmed_map\", \"INV_PROC_CONFIG.indirect_amount_basis\"];\nconst missing = REQUIRED.filter(p => { const [c, k] = p.split('.'); const v = cfg[c]?.[k]; return v === undefined || v === null || v === ''; });\nif (missing.length) throw new Error('Missing settings in summers.datastore.config.keys: ' + missing.join(', '));\nreturn [{ json: { cfg } }];\n"
+      }
+    },
+    {
+      "id": "b81cb85c-1cd1-4a6b-a230-d7e66399ff4b",
+      "name": "Load Config",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        1008,
+        -256
+      ],
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "o7jlGvq1uEqz6zIy",
+          "mode": "list",
+          "cachedResultName": "summers.datastore.config.keys",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/o7jlGvq1uEqz6zIy"
+        },
+        "returnAll": true
+      },
+      "executeOnce": true
+    },
+    {
+      "id": "da4e3b5e-7ed4-40ec-8612-db23952becbd",
+      "name": "Load Location Master",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        1680,
+        -256
+      ],
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "rtOK1UEM6RUOcEUC",
+          "mode": "list",
+          "cachedResultName": "Location_Master",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/rtOK1UEM6RUOcEUC"
+        },
+        "returnAll": true
+      },
+      "executeOnce": true,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "62cf28f8-1f32-4911-a480-ef56a52ac3f9",
+      "name": "Load Vendor Account Map",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        1456,
+        -256
+      ],
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "vV6SYHVkDmjTPvgC",
+          "mode": "list",
+          "cachedResultName": "Vendor_Account_Map",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/vV6SYHVkDmjTPvgC"
+        },
+        "returnAll": true
+      },
+      "executeOnce": true,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "5ad592e6-01d4-4c71-83df-4f24f31014ca",
+      "name": "Match Account",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1904,
+        -256
+      ],
+      "parameters": {
+        "jsCode": "const LEGAL_SUFFIXES = /\\b(incorporated|llc|l\\.l\\.c|inc|corp|corporation|co|company|ltd|limited|llp|lp|enterprises?|facilit(?:y|ies)|industries|international|the)\\b/g;\nfunction normVendor(raw) {\n  if (!raw) return '';\n  return String(raw).toLowerCase().replace(/&/g, ' and ').replace(/[.,\\/#!$%\\^*;:{}=\\-_`~()'\"]/g, ' ')\n    .replace(LEGAL_SUFFIXES, ' ').replace(/\\s+/g, ' ').trim();\n}\n\n// Non-PO invoice -> Vendor_Account_Map row -> GL, department, Sage vendor and location (via Location_Master).\nconst I = $('Build Config').first().json.cfg.INV_PROC_CONFIG;\nconst CONFIG = {\n  TOL: I.validation_tolerance,\n  REQUIRE_CONFIRMED: I.indirect_require_confirmed_map === true,\n  AMOUNT_BASIS: I.indirect_amount_basis,   // 'current_charges' (current period only) or 'invoice_total'\n  MAP: { account: 'account_number', vendor: 'vendor_name', code: 'location_code', entity: 'sage_entity_id',\n         gl: 'gl_account', department: 'department_code', sageVendor: 'sage_vendor_id', confirmed: 'confirmed_by_client' },\n  LOC: { code: 'location_code', aliases: 'code_aliases', active: 'active', entity: 'sage_entity_id',\n         sageLocation: 'sage_location_id', name: 'location_name', tenant: 'st_tenant_id' },\n};\nconst M = CONFIG.MAP, LC = CONFIG.LOC;\nconst ctx = JSON.parse(JSON.stringify($('Start').first().json));\nctx.warnings = ctx.warnings || [];\nconst inv = ctx.invoice;\nconst exc = (s, r) => { ctx.status = s; ctx.reason = r; return [{ json: ctx }]; };\nconst up = v => String(v ?? '').trim().toUpperCase();\nconst lc = v => String(v ?? '').trim().toLowerCase();\nconst round2 = n => Math.round(n * 100) / 100;\nconst normAcct = v => String(v ?? '').replace(/[^A-Za-z0-9]/g, '').replace(/^0+/, '').toUpperCase();\nconst vendorLike = name => { const a = normVendor(name), b = normVendor(ctx.vendor?.name); return a && b && (a === b || a.includes(b) || b.includes(a)); };\n\nconst clean = rows => rows.map(i => i.json).filter(r => r && Object.keys(r).length && !r.error);\nconst mapRows = clean($('Load Vendor Account Map').all());\nconst locRows = clean($('Load Location Master').all());\n\n// 1. Find the account\nconst acct = normAcct(inv.account_number || ctx.customer?.account);\nlet hits = acct ? mapRows.filter(r => normAcct(r[M.account]) === acct) : mapRows.filter(r => vendorLike(r[M.vendor]));\nif (hits.length > 1) { const v = hits.filter(r => vendorLike(r[M.vendor])); if (v.length) hits = v; }\nif (hits.length > 1 && ctx.location?.status === 'RESOLVED') { const l = hits.filter(r => up(r[M.code]) === up(ctx.location.code)); if (l.length) hits = l; }\nif (!hits.length) return exc('ACCOUNT_NOT_MAPPED', `${ctx.vendor?.name ?? 'Vendor'} account ${acct || '(none printed)'} is not in Vendor_Account_Map and the invoice has no PO. If this is a supplier invoice, it needs a ServiceTitan PO; if it is an indirect expense, add the account to Vendor_Account_Map`);\nif (hits.length > 1) return exc('ACCOUNT_AMBIGUOUS', `${hits.length} Vendor_Account_Map rows match ${ctx.vendor?.name} ${acct || ''}`.trim());\nconst row = hits[0];\nif (acct && !vendorLike(row[M.vendor])) ctx.warnings.push(`Account ${acct} is mapped to \"${row[M.vendor]}\" but the invoice vendor is \"${ctx.vendor?.name}\"`);\nif (row[M.confirmed] !== true) {\n  if (CONFIG.REQUIRE_CONFIRMED) return exc('MAPPING_NOT_CONFIRMED', `Vendor_Account_Map row for ${row[M.vendor]} ${row[M.account]} is not confirmed by the client`);\n  ctx.warnings.push(`Vendor_Account_Map row for ${row[M.vendor]} ${row[M.account]} is not client-confirmed`);\n}\n\n// 2. GL and department\nconst glRaw = String(row[M.gl] ?? '').trim();\nconst gl = (glRaw.match(/^\\s*([\\w.]+)/) || [])[1] || null;\nif (!gl) return exc('GL_NOT_MAPPED', `No GL account for ${row[M.vendor]} ${row[M.account]} in Vendor_Account_Map`);\nconst department = String(row[M.department] ?? '').trim() || null;\nif (!department) ctx.warnings.push('No department code in Vendor_Account_Map');\n\n// 3. Location: the account map is authoritative for non-PO bills; the document must not disagree\nconst mapCode = up(row[M.code]);\nconst locRow = locRows.find(r => up(r[LC.code]) === mapCode || String(r[LC.aliases] ?? '').toUpperCase().split(/[\\s,;|\\/]+/).includes(mapCode));\nif (!locRow) return exc('LOCATION_NOT_IN_MASTER', `Account map location ${mapCode || '(blank)'} is not in Location_Master`);\nconst code = up(locRow[LC.code]);\nconst prev = ctx.location || {};\nif (prev.status === 'RESOLVED' && up(prev.code) !== code)\n  return exc('LOCATION_CONFLICT', `Account map says ${code}; the document points to ${prev.code} (${prev.method})`);\nconst entity = String(locRow[LC.entity] ?? '').trim() || null;\nif (!entity) return exc('LOCATION_NOT_IN_MASTER', `Location ${code} has no Sage entity in Location_Master`);\nif (row[M.entity] && lc(row[M.entity]) !== lc(entity)) ctx.warnings.push(`Vendor_Account_Map entity \"${row[M.entity]}\" differs from Location_Master \"${entity}\"; using Location_Master`);\nctx.location = { status: 'RESOLVED', code, entity_id: entity,\n  sage_location_id: String(locRow[LC.sageLocation] ?? '').trim() || entity,\n  name: locRow[LC.name] ?? entity, st_tenant_id: locRow[LC.tenant] ? String(locRow[LC.tenant]) : null,\n  active: locRow[LC.active] === true, needs_review: false,\n  method: prev.status === 'RESOLVED' ? `${prev.method}+ACCOUNT_MAP` : 'ACCOUNT_MAP',\n  method_detail: (prev.status === 'RESOLVED' && prev.method_detail ? prev.method_detail + '; ' : '') + `Vendor Account Map (account ${row[M.account]}) = ${code}` };\nif (!ctx.location.active) return exc('LOCATION_NOT_ACTIVE', `Location ${code} (${entity}) is not active yet in Location_Master`);\n\n// 4. Amount: current-period charges when printed, so an unpaid previous balance is not posted twice\nconst useCurrent = CONFIG.AMOUNT_BASIS === 'current_charges' && inv.current_charges !== null && inv.current_charges !== undefined;\nconst amount = useCurrent ? inv.current_charges : inv.invoice_total;\nif (amount === null || amount === undefined || !Number.isFinite(Number(amount))) return exc('AMOUNT_MISSING', 'No invoice total or current charges could be read');\nif (Number(amount) <= 0) return exc('CREDIT_MEMO_REVIEW', `Amount to post is ${amount}; credits and zero bills are not auto-posted`);\nconst due = inv.amount_due ?? inv.invoice_total;\nif (useCurrent && due !== null && due !== undefined && Number(due) - Number(amount) > CONFIG.TOL)\n  ctx.warnings.push(`Posting current charges ${amount}; amount due ${due} includes ${round2(due - amount)} carried forward`);\n\nctx.account_match = { result: 'PASS', detail: `account ${acct || '(by vendor)'} -> ${row[M.vendor]} / GL ${gl} / ${code}` };\nctx.gl = { account: gl, name: glRaw };\nconst kind = ctx.lane === 'INDIRECT_ADVERTISING' ? 'Advertising' : ctx.lane === 'INDIRECT_UTILITY' ? 'Utility' : 'Expense';\nctx.status = 'READY_TO_POST';\nctx.payload = {\n  location_id: ctx.location.entity_id,\n  line_location_id: ctx.location.sage_location_id,\n  vendor: { sage_vendor_id: String(row[M.sageVendor] ?? '').trim() || null, name: ctx.vendor?.name || row[M.vendor], location_code: code },\n  bill: { record_id: inv.invoice_number, doc_number: inv.account_number || null,\n          when_created: inv.invoice_date, when_due: inv.due_date, term: inv.payment_terms,\n          description: `${ctx.vendor?.name || row[M.vendor]} ${inv.invoice_number}${inv.charge_summary ? ' - ' + inv.charge_summary : ''}` },\n  lines: [{ amount: round2(Number(amount)), gl_account: gl, gl_name: glRaw, item_names: [], department,\n            memo: `${kind} ${inv.invoice_number}${inv.account_number ? ' / acct ' + inv.account_number : ''}` }],\n};\nif (!ctx.payload.vendor.sage_vendor_id) ctx.warnings.push('No Sage vendor ID in Vendor_Account_Map; Sage Post will match the vendor by name');\nreturn [{ json: ctx }];\n"
+      }
+    },
+    {
+      "id": "094c7ba5-4b65-4214-b9fa-cfd0e4def3ba",
+      "name": "Start",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        784,
+        -256
+      ],
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    }
+  ],
+  "connections": {
+    "Build Config": {
+      "main": [
+        [
+          {
+            "node": "Load Vendor Account Map",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Config": {
+      "main": [
+        [
+          {
+            "node": "Build Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Location Master": {
+      "main": [
+        [
+          {
+            "node": "Match Account",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Vendor Account Map": {
+      "main": [
+        [
+          {
+            "node": "Load Location Master",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start": {
+      "main": [
+        [
+          {
+            "node": "Load Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "tags": [
+    "AP Automation",
+    "Sub-flow"
+  ]
+}
