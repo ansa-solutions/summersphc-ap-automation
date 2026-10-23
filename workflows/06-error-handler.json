@@ -1,0 +1,146 @@
+{
+  "id": "Og4XMjYHU0N7AMDH",
+  "name": "ANSA | 06. Error Handler",
+  "nodes": [
+    {
+      "id": "044e845e-9daa-4a13-8c61-46d13ed749e9",
+      "name": "Build Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2224,
+        304
+      ],
+      "parameters": {
+        "jsCode": "// Settings come from the summers.datastore.config.keys data table: { CATEGORY: { key: value } }.\nconst parse = v => {\n  if (v === null || v === undefined) return null;\n  const s = String(v).trim();\n  if (/^(true|false)$/i.test(s)) return s.toLowerCase() === 'true';\n  if (/^-?\\d+(\\.\\d+)?$/.test(s)) return Number(s);\n  if (/^[\\[{]/.test(s)) { try { return JSON.parse(s); } catch (e) { /* keep as text */ } }\n  return s;\n};\nconst cfg = {};\nfor (const { json: r } of $input.all()) {\n  if (!r || !r.category || !r.key) continue;\n  (cfg[r.category] ||= {})[r.key] = parse(r.value);\n}\n// Fail loudly if a required setting is missing, rather than running with a guess.\nconst REQUIRED = [\"EMAIL_CONFIG.error_notify_to\"];\nconst missing = REQUIRED.filter(p => { const [c, k] = p.split('.'); const v = cfg[c]?.[k]; return v === undefined || v === null || v === ''; });\nif (missing.length) throw new Error('Missing settings in summers.datastore.config.keys: ' + missing.join(', '));\nreturn [{ json: { cfg } }];\n"
+      }
+    },
+    {
+      "id": "2b484155-b705-4903-80ee-91e26d19b004",
+      "name": "Email Alert",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2672,
+        304
+      ],
+      "parameters": {
+        "sendTo": "={{ $json.to }}",
+        "subject": "={{ $json.subject }}",
+        "message": "={{ $json.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "v7zEv46gaNt0IQpa",
+          "name": "Gmail account 2"
+        }
+      },
+      "disabled": true,
+      "onError": "continueRegularOutput",
+      "webhookId": "d879dbb0-62f7-4be0-9fa2-51769a73d90b"
+    },
+    {
+      "id": "8f674f1e-9d2e-43aa-84bc-81745d9884e5",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        1776,
+        304
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "8ec08b02-8f70-4001-8096-e488bb62a510",
+      "name": "Format Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2448,
+        304
+      ],
+      "parameters": {
+        "jsCode": "const CONFIG = { NOTIFY_TO: $('Build Config').first().json.cfg.EMAIL_CONFIG.error_notify_to };\nconst e = $('Error Trigger').first().json;\nconst esc = v => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst rows = [\n  ['Workflow', e.workflow?.name], ['Failed node', e.execution?.lastNodeExecuted],\n  ['Error', e.execution?.error?.message], ['Execution', e.execution?.url || e.execution?.id], ['Mode', e.execution?.mode],\n].filter(([, v]) => v);\nconst html = `<div style=\"font-family:Lato,Arial,sans-serif;font-size:14px;color:#111827;max-width:640px\">` +\n  `<h3 style=\"color:#462CED;margin:0 0 8px\">AP automation error</h3><table style=\"border-collapse:collapse;width:100%\">` +\n  rows.map(([k, v]) => `<tr><td style=\"padding:6px;font-weight:bold;width:30%;color:#374151\">${esc(k)}</td><td style=\"padding:6px\">${esc(v)}</td></tr>`).join('') +\n  `</table></div>`;\nreturn [{ json: { to: CONFIG.NOTIFY_TO, subject: `[AP workflow error] ${e.workflow?.name ?? 'unknown'}`, html } }];\n"
+      }
+    },
+    {
+      "id": "71be868b-ee0d-4490-9116-6e2dbe2a1294",
+      "name": "Load Config",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        2000,
+        304
+      ],
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "o7jlGvq1uEqz6zIy",
+          "mode": "list",
+          "cachedResultName": "summers.datastore.config.keys",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/o7jlGvq1uEqz6zIy"
+        },
+        "returnAll": true
+      },
+      "executeOnce": true
+    }
+  ],
+  "connections": {
+    "Build Config": {
+      "main": [
+        [
+          {
+            "node": "Format Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Load Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Error": {
+      "main": [
+        [
+          {
+            "node": "Email Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Config": {
+      "main": [
+        [
+          {
+            "node": "Build Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "tags": [
+    "AP Automation",
+    "Error Handling"
+  ]
+}
