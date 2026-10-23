@@ -74,7 +74,8 @@
         "options": {
           "batching": {
             "batch": {
-              "batchSize": 1
+              "batchSize": 1,
+              "batchInterval": 3000
             }
           },
           "response": {
