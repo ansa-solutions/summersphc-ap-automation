@@ -42,7 +42,7 @@
       "typeVersion": 1.1,
       "position": [
         0,
-        544
+        464
       ],
       "parameters": {
         "operation": "deleteRows",
@@ -71,7 +71,7 @@
       "typeVersion": 1.1,
       "position": [
         0,
-        192
+        112
       ],
       "parameters": {
         "operation": "deleteRows",
@@ -100,7 +100,7 @@
       "typeVersion": 1.1,
       "position": [
         0,
-        912
+        832
       ],
       "parameters": {
         "operation": "deleteRows",
@@ -250,8 +250,8 @@
       },
       "credentials": {
         "googleSheetsOAuth2Api": {
-          "id": "Qud2Ohm3u8o8mDCm",
-          "name": "Google Sheets | Company Mapping"
+          "id": "0tGGmJnU5cS1t3EG",
+          "name": "Google Sheets account 2"
         }
       },
       "executeOnce": true,
@@ -269,13 +269,13 @@
       "parameters": {
         "documentId": {
           "__rl": true,
-          "mode": "id",
-          "value": "={{ $('Build Config').first().json.cfg.SHEET_SYNC_CONFIG.spreadsheet_id }}"
+          "value": "={{ $json.cfg.SHEET_SYNC_CONFIG.spreadsheet_id }}",
+          "mode": "id"
         },
         "sheetName": {
           "__rl": true,
-          "mode": "id",
-          "value": "={{ $('Build Config').first().json.cfg.SHEET_SYNC_CONFIG.location_tab_gid }}"
+          "value": "={{ $json.cfg.SHEET_SYNC_CONFIG.location_tab_gid }}",
+          "mode": "id"
         },
         "options": {}
       },
@@ -320,8 +320,8 @@
       },
       "credentials": {
         "googleSheetsOAuth2Api": {
-          "id": "Qud2Ohm3u8o8mDCm",
-          "name": "Google Sheets | Company Mapping"
+          "id": "0tGGmJnU5cS1t3EG",
+          "name": "Google Sheets account 2"
         }
       },
       "executeOnce": true,
@@ -334,7 +334,7 @@
       "typeVersion": 3.2,
       "position": [
         -224,
-        544
+        464
       ],
       "parameters": {
         "mode": "expression",
@@ -349,7 +349,7 @@
       "typeVersion": 1,
       "position": [
         0,
-        1088
+        1008
       ],
       "parameters": {}
     },
@@ -360,7 +360,7 @@
       "typeVersion": 1.1,
       "position": [
         0,
-        368
+        288
       ],
       "parameters": {
         "operation": "upsert",
@@ -386,7 +386,8 @@
             "business_unit_id": "={{ $json.data.business_unit_id }}",
             "business_unit_name": "={{ $json.data.business_unit_name }}",
             "department_code": "={{ $json.data.department_code }}",
-            "department_name": "={{ $json.data.department_name }}"
+            "department_name": "={{ $json.data.department_name }}",
+            "location_code": "={{ $json.data.department_name }}"
           },
           "matchingColumns": [],
           "schema": [
@@ -429,6 +430,16 @@
               "type": "string",
               "readOnly": false,
               "removed": false
+            },
+            {
+              "id": "location_code",
+              "displayName": "location_code",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
             }
           ],
           "attemptToConvertTypes": false,
@@ -444,7 +455,7 @@
       "typeVersion": 1.1,
       "position": [
         0,
-        0
+        -80
       ],
       "parameters": {
         "operation": "upsert",
@@ -583,7 +594,7 @@
       "typeVersion": 1.1,
       "position": [
         0,
-        720
+        640
       ],
       "parameters": {
         "operation": "upsert",
