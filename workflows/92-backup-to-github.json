@@ -143,26 +143,6 @@
       "executeOnce": true
     },
     {
-      "id": "2faa73c3-5e04-4e6c-87a1-90e15a98f536",
-      "name": "Nightly 11:45 PM",
-      "type": "n8n-nodes-base.scheduleTrigger",
-      "typeVersion": 1.2,
-      "position": [
-        0,
-        0
-      ],
-      "parameters": {
-        "rule": {
-          "interval": [
-            {
-              "field": "cronExpression",
-              "expression": "45 23 * * *"
-            }
-          ]
-        }
-      }
-    },
-    {
       "id": "91859dcf-3cd0-477c-9811-6e4cad38bb32",
       "name": "Prepare Files",
       "type": "n8n-nodes-base.code",
@@ -236,6 +216,26 @@
         208
       ],
       "parameters": {}
+    },
+    {
+      "id": "2faa73c3-5e04-4e6c-87a1-90e15a98f536",
+      "name": "Sundays 11:45 PM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "45 23 * * 0"
+            }
+          ]
+        }
+      }
     }
   ],
   "connections": {
@@ -294,17 +294,6 @@
         ]
       ]
     },
-    "Nightly 11:45 PM": {
-      "main": [
-        [
-          {
-            "node": "Load Config",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
     "Prepare Files": {
       "main": [
         [
@@ -328,6 +317,17 @@
       ]
     },
     "Run Now": {
+      "main": [
+        [
+          {
+            "node": "Load Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sundays 11:45 PM": {
       "main": [
         [
           {
