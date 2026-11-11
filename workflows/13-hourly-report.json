@@ -1,0 +1,205 @@
+{
+  "id": "mHo3rJvLud57CcBv",
+  "name": "ANSA | 13. Hourly Report",
+  "nodes": [
+    {
+      "id": "83a028ae-63d1-4aa0-b640-3608fcc3e2d3",
+      "name": "Build Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2592,
+        -192
+      ],
+      "parameters": {
+        "jsCode": "// Settings come from the summers.datastore.config.keys data table: { CATEGORY: { key: value } }.\nconst parse = v => {\n  if (v === null || v === undefined) return null;\n  const s = String(v).trim();\n  if (/^(true|false)$/i.test(s)) return s.toLowerCase() === 'true';\n  if (/^-?\\d+(\\.\\d+)?$/.test(s)) return Number(s);\n  if (/^[\\[{]/.test(s)) { try { return JSON.parse(s); } catch (e) { /* keep as text */ } }\n  return s;\n};\nconst cfg = {};\nfor (const { json: r } of $input.all()) {\n  if (!r || !r.category || !r.key) continue;\n  (cfg[r.category] ||= {})[r.key] = parse(r.value);\n}\n// Fail loudly if a required setting is missing, rather than running with a guess.\nconst REQUIRED = [\"EMAIL_CONFIG.error_notify_to\"];\nconst missing = REQUIRED.filter(p => { const [c, k] = p.split('.'); const v = cfg[c]?.[k]; return v === undefined || v === null || v === ''; });\nif (missing.length) throw new Error('Missing settings in summers.datastore.config.keys: ' + missing.join(', '));\nreturn [{ json: { cfg } }];\n"
+      }
+    },
+    {
+      "id": "d3dad0ef-8e09-485f-bcbf-d5e759699dd4",
+      "name": "Code in JavaScript",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3024,
+        -192
+      ],
+      "parameters": {
+        "jsCode": "// Hourly AP report: every email read in the previous clock hour, with each document it carried and what happened to it.\nconst rows = $input.all().map(i => i.json).filter(r => r && (r.id !== undefined || r.message_id || r.document_id));\nconst windowEnd = $now.startOf('hour');\nconst reportDate = `${windowEnd.minus({ hours: 1 }).toFormat('yyyy-MM-dd HH:mm')} to ${windowEnd.toFormat('HH:mm')}`;\n\nconst esc = v => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;');\nconst txt = v => String(v ?? '').trim();\nconst money = v => { const n = Number(String(v ?? '').replace(/,/g, '')); return txt(v) !== '' && Number.isFinite(n) ? n.toLocaleString('en-US', { style: 'currency', currency: 'USD' }) : ''; };\n\n// One outcome per document: POSTED, SKIPPED (not a billing document / nothing to read), EXCEPTION, or OPEN (did not finish).\nfunction outcome(r) {\n  const status = txt(r.processing_status).toUpperCase();\n  const reason = txt(r.exception_reason);\n  const bill = txt(r.sage_bill_id);\n  if (status === 'POSTED' && bill) return { kind: 'POSTED', text: `Posted to Sage, Bill ID ${bill}` };\n  if (status === 'SKIPPED') return { kind: 'SKIPPED', text: `Skipped. ${reason.replace(/^[A-Z_]+:\\s*/, '')}`.trim() };\n  if (/^NOT_A_VALID_PDF/.test(reason)) return { kind: 'SKIPPED', text: `Skipped. ${reason.replace(/^[A-Z_]+:\\s*/, '')}` };\n  if (status === 'RECONCILED') return { kind: 'POSTED', text: 'Statement reconciled' };\n  if (status === 'DUPLICATE') return { kind: 'EXCEPTION', text: `Duplicate. ${reason.replace(/^DUPLICATE:\\s*/, '')}`.trim() };\n  if (reason) return { kind: 'EXCEPTION', text: reason };\n  if (status === 'POSTED') return { kind: 'EXCEPTION', text: 'Marked posted but no Sage Bill ID recorded' };\n  return { kind: 'OPEN', text: status ? `Not completed (${status})` : 'Not completed' };\n}\n\n// Informational notes: price and quantity variances are reported, never enforced; location discrepancies are logged.\nfunction notes(r) {\n  const out = [];\n  const v = Number(r.variance_amount);\n  if (txt(r.variance_amount) !== '' && Number.isFinite(v) && Math.abs(v) >= 0.005) out.push(`Price variance vs PO: ${v > 0 ? '+' : '-'}${money(Math.abs(v))}`);\n  const qty = /quantity: \\w+ \\(Not enforced\\. ([^|)]+)\\)/.exec(txt(r.match_details));\n  if (qty) out.push(`Quantity variance: ${qty[1].trim()}`);\n  const how = txt(r.location_method);\n  if (/sources differ/i.test(how)) out.push('Ship To differs from PO location; PO used');\n  if (/no location code in PO/i.test(how)) out.push('No location code in PO; Ship To used');\n  if (/PO completed from the document text/i.test(txt(r.warnings))) out.push('PO number completed from the document text');\n  return out;\n}\n\nconst docs = rows.map(r => ({ r, o: outcome(r), n: notes(r) }));\nconst emails = [];\nconst byMsg = new Map();\nfor (const d of docs) {\n  const key = txt(d.r.message_id) || `row-${d.r.id}`;\n  if (!byMsg.has(key)) { const g = { subject: txt(d.r.subject) || '(no subject)', docs: [] }; byMsg.set(key, g); emails.push(g); }\n  byMsg.get(key).docs.push(d);\n}\nconst count = k => docs.filter(d => d.o.kind === k).length;\nconst totals = { emails: emails.length, documents: docs.length, posted: count('POSTED'), exceptions: count('EXCEPTION'), skipped: count('SKIPPED'), open: count('OPEN') };\nconst postedAmount = docs.filter(d => d.o.kind === 'POSTED').reduce((s, d) => s + (Number(String(d.r.total_amount ?? '').replace(/,/g, '')) || 0), 0);\n\nconst C = { primary: '#374151', accent: '#462CED', text: '#111827', line: '#E5E7EB', soft: '#F9FAFB' };\nconst COLOR = { POSTED: '#047857', EXCEPTION: '#B91C1C', SKIPPED: C.primary, OPEN: '#B45309' };\nconst th = `padding:8px;text-align:left;background:${C.primary};color:#FFFFFF;font-weight:bold;font-size:12px`;\nconst td = `padding:8px;border-bottom:1px solid ${C.line};vertical-align:top;font-size:13px`;\nconst HEAD = ['Document', 'Vendor', 'Invoice #', 'PO', 'Location', 'Amount', 'Outcome', 'Notes'];\n\nconst metric = (label, value) => `<td style=\"padding:10px 14px;border:1px solid ${C.line};text-align:center\"><div style=\"font-size:22px;font-weight:bold;color:${C.accent}\">${esc(value)}</div><div style=\"font-size:12px;color:${C.primary}\">${esc(label)}</div></td>`;\nconst summary = `<table cellspacing=\"0\" style=\"border-collapse:collapse;margin:0 0 20px\"><tr>` +\n  metric('Emails read', totals.emails) + metric('Documents', totals.documents) + metric('Posted to Sage', totals.posted) +\n  metric('Exceptions', totals.exceptions) + metric('Skipped', totals.skipped) + (totals.open ? metric('Not completed', totals.open) : '') +\n  metric('Amount posted', money(postedAmount) || '$0.00') + `</tr></table>`;\n\nconst body = emails.map((g, i) =>\n  `<tr><td colspan=\"${HEAD.length}\" style=\"padding:8px;background:${C.soft};border-top:2px solid ${C.primary};border-bottom:1px solid ${C.line};font-weight:bold;color:${C.text}\">` +\n  `${i + 1}. ${esc(g.subject)} <span style=\"font-weight:normal;color:${C.primary}\">(${g.docs.length} document${g.docs.length === 1 ? '' : 's'})</span></td></tr>` +\n  g.docs.map(({ r, o, n }) => {\n    const loc = [txt(r.location_name), txt(r.location_method)].filter(Boolean);\n    return `<tr>` +\n      `<td style=\"${td}\">${esc(txt(r.attachment_name) || (txt(r.document_type) === 'NO_INVOICE_CONTENT' ? 'Email body' : '(email body)'))}</td>` +\n      `<td style=\"${td}\">${esc(r.vendor_name)}</td>` +\n      `<td style=\"${td}\">${esc(r.invoice_number)}</td>` +\n      `<td style=\"${td}\">${esc(r.po_number)}</td>` +\n      `<td style=\"${td}\">${esc(loc[0] ?? '')}${loc[1] ? `<div style=\"font-size:11px;color:${C.primary}\">${esc(loc[1])}</div>` : ''}</td>` +\n      `<td style=\"${td};text-align:right;white-space:nowrap\">${esc(money(r.total_amount))}</td>` +\n      `<td style=\"${td};color:${COLOR[o.kind]};font-weight:bold\">${esc(o.text)}</td>` +\n      `<td style=\"${td}\">${n.map(esc).join('<br>')}</td>` +\n      `</tr>`;\n  }).join('')\n).join('');\n\nconst html =\n  `<div style=\"font-family:Lato,Arial,sans-serif;color:${C.text};background:#FFFFFF;max-width:1100px\">` +\n  `<h2 style=\"color:${C.accent};margin:0 0 4px\">AP Hourly Report</h2>` +\n  `<p style=\"margin:0 0 16px;color:${C.primary}\">Emails read ${esc(reportDate)}</p>` +\n  summary +\n  `<table cellspacing=\"0\" style=\"border-collapse:collapse;width:100%\">` +\n  `<tr>${HEAD.map(h => `<th style=\"${th}\">${h}</th>`).join('')}</tr>` +\n  (body || `<tr><td colspan=\"${HEAD.length}\" style=\"${td}\">No emails were read ${esc(reportDate)}.</td></tr>`) +\n  `</table>` +\n  `<p style=\"font-size:12px;color:${C.primary};margin:16px 0 0\">Price and quantity variances are shown for information and do not stop posting. ` +\n  `Exception emails stay unread in the AP inbox.</p>` +\n  `</div>`;\n\nreturn [{ json: { report_date: reportDate, ...totals, amount_posted: Math.round(postedAmount * 100) / 100, subject: `AP Hourly Report ${reportDate}`, html } }];\n"
+      }
+    },
+    {
+      "id": "4bf223f9-9b9d-44da-a7a1-2ee2bb0328f8",
+      "name": "Get row(s)",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        2816,
+        -192
+      ],
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "YQpLj9gtvsYErCBh",
+          "mode": "list",
+          "cachedResultName": "New Business Processing Datatable",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/YQpLj9gtvsYErCBh"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "createdAt",
+              "condition": "gte",
+              "keyValue": "={{ $now.startOf('hour').minus({ hours: 1 }).toISO() }}"
+            },
+            {
+              "keyName": "createdAt",
+              "condition": "lt",
+              "keyValue": "={{ $now.startOf('hour').toISO() }}"
+            }
+          ]
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "ec75ea09-928f-4238-bcb1-e3dc412b3ae3",
+      "name": "Load Config",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        2368,
+        -192
+      ],
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "o7jlGvq1uEqz6zIy",
+          "mode": "list",
+          "cachedResultName": "summers.datastore.config.keys",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/o7jlGvq1uEqz6zIy"
+        },
+        "returnAll": true
+      },
+      "executeOnce": true
+    },
+    {
+      "id": "69d09fe0-893b-4fd4-a9e1-f8352ff832c9",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        2160,
+        -192
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9-17 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "909e192a-d2de-413e-9eb8-b34c94af194f",
+      "name": "Send a message",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        3232,
+        -192
+      ],
+      "parameters": {
+        "sendTo": "={{ $('Build Config').first().json.cfg.EMAIL_CONFIG.error_notify_to }}",
+        "subject": "=AP Hourly Report {{ $now.startOf('hour').toFormat('yyyy-MM-dd HH:mm') }}",
+        "message": "={{ $json.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "v7zEv46gaNt0IQpa",
+          "name": "Gmail account 2"
+        }
+      },
+      "webhookId": "61e387b0-1f25-4f03-89ef-e8646006fa4f"
+    }
+  ],
+  "connections": {
+    "Build Config": {
+      "main": [
+        [
+          {
+            "node": "Get row(s)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get row(s)": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Config": {
+      "main": [
+        [
+          {
+            "node": "Build Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Load Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "timezone": "America/New_York",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false,
+    "errorWorkflow": "Og4XMjYHU0N7AMDH"
+  },
+  "tags": [
+    "AP Automation",
+    "Scheduled"
+  ]
+}
