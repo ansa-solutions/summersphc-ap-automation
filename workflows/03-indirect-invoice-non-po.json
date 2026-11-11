@@ -169,7 +169,9 @@
   },
   "settings": {
     "executionOrder": "v1",
-    "binaryMode": "separate"
+    "binaryMode": "separate",
+    "availableInMCP": true,
+    "errorWorkflow": "Og4XMjYHU0N7AMDH"
   },
   "tags": [
     "AP Automation",
