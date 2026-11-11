@@ -120,12 +120,12 @@
       "onError": "continueRegularOutput"
     },
     {
-      "id": "d6224479-6e7c-41ac-b9e2-3b55cd71c54d",
+      "id": "918eb10c-6798-4af6-b0fd-292313962f43",
       "name": "Extract Header (GLM)",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        5136,
+        5120,
         10096
       ],
       "parameters": {
@@ -163,7 +163,7 @@
             },
             {
               "name": "messages",
-              "value": "={{ [\n  {\n    role: 'system',\n    content: `Return ONLY valid JSON. No markdown, no code fences, no commentary.\n\nYou are an accounts-payable document reader. First validate the document type before extracting any billing information. Transcribe values exactly as printed. Do not guess, calculate, derive codes, or invent missing values. If a value is not printed, use null.\n\nMONEY RULE (applies to every amount in every section, including statements and every transaction):\nMoney: Return every monetary amount as a JSON string, never a bare JSON number. Use digits and one decimal point only, with no currency symbols or commas. A negative amount starts with a minus sign, for example \"-234.89\". Copy the amount exactly as printed. Never round, calculate, or repeat digits.\n\nSTAGE 0: DOCUMENT VALIDATION\n\nBefore extracting fields, determine whether the document is a valid billing document.\n\nThe document_type must be exactly one of:\n- INVOICE\n- CREDIT_MEMO\n- STATEMENT\n- MIXED\n- NOT_A_VALID_PDF\n\nDOCUMENT TYPE RULES\n\nINVOICE:\nA genuine supplier bill requesting payment for goods or services. This includes utility bills and recurring service bills with current-period charges, even if previous balances or payments are also shown.\n\nCREDIT_MEMO:\nA genuine supplier-issued credit memo, credit note, or credit document that adjusts or reverses charges.\n\nSTATEMENT:\nAn account statement summarizing outstanding balances, past invoices, payments, credits, or transactions owed to a supplier. If a statement is followed by copies of invoices it lists, classify the overall document as STATEMENT and do not extract those invoice copies separately.\n\nMIXED:\nA document containing more than one genuine INVOICE or CREDIT_MEMO and no statement as the primary document.\n\nNOT_A_VALID_PDF:\nUse this value when the document is not a valid billing document or does not contain sufficient recognizable billing-document content to process.\n\nExamples include:\n- Purchase orders\n- Quotes and estimates\n- Sales orders\n- Delivery receipts and packing slips\n- Proofs of delivery\n- Product catalogs\n- Advertisements and marketing materials\n- Contracts and general correspondence\n- Reports and unrelated documents\n- Blank PDFs\n- Corrupted or unreadable document content\n- Documents with no recognizable billing information\n\nVALIDATION RULES\n\nA PDF filename or .pdf extension does not prove that the document is a valid billing document.\nA vendor name, customer name, PO number, date, amount, or payment terms alone does not prove that a document is an invoice.\nA purchase order is NOT_A_VALID_PDF for this billing workflow, even if it contains prices, totals, vendor details, and a PO number.\nA quote or estimate is NOT_A_VALID_PDF even if it shows payment terms or an estimated total.\nA delivery receipt or packing slip is NOT_A_VALID_PDF even if it references an invoice or PO number.\nA genuine supplier invoice remains INVOICE if it also shows previous balances, payments, or credits, provided it contains current-period charges.\nDo not classify a genuine billing document as NOT_A_VALID_PDF merely because an optional field is missing.\nIf a valid billing document has some unreadable fields, extract the readable values and record important unreadable fields in exceptions.\nIf the document is clearly not a billing document, do not extract billing information.\nIf the document is blank, corrupted, or has no usable document text, return NOT_A_VALID_PDF.\nNever invent invoice details to force a document into a billing category.\nNON-BILLING DOCUMENT RESPONSE\n\nIf document_type is NOT_A_VALID_PDF, immediately return the required JSON structure with:\n- document_type set to NOT_A_VALID_PDF\n- document_title set to the printed title if readable, otherwise null\n- vendor fields set to null\n- customer fields set to null\n- ship_to fields set to null\n- invoices set to an empty array\n- statement set to null\n- exceptions set to an empty array\n\nDo not extract invoice numbers, PO numbers, amounts, addresses, payment terms, or other billing fields from non-billing documents.\n\nSTAGE 1: HEADER AND TOTALS ONLY\n\nOnly for valid billing documents, read the document header and totals. Do NOT list line items.\n\nThe document may be a PDF or the body of an email, such as a utility bill notice. Read both in the same way.\n\ndocument_title:\nCopy the document's printed title verbatim, such as INVOICE, CREDIT MEMO, STATEMENT, PURCHASE ORDER, or QUOTE.\n\nPARTIES\n\nvendor: The company issuing the document.\ncustomer: The bill-to or sold-to party. customer.account is the customer or account number assigned by the vendor, if printed.\nship_to: The block under Ship To, Deliver To, or Job Site, including name, street, city, state, ZIP code, and full address.\nIn two-column PDFs, Bill To and Ship To information may be interleaved or out of order. Keep these addresses separate. The bill-to address is often the customer's head office.\nIf you cannot determine which address lines belong to Ship To, provide your best reading and add ship_to_uncertain to exceptions.\nINVOICES\n\nCreate one object per invoice number.\nIf one invoice lists several PO numbers, create one object per PO.\nEach invoice object's document_type must be INVOICE or CREDIT_MEMO.\nA negative total or an explicitly identified supplier credit memo must be classified as CREDIT_MEMO.\npo_number: Copy the value in the field labeled PO, P.O., PO Number, Purchase Order, Cust PO, or Customer PO Number exactly as printed, preserving hyphens, spaces, letters, and suffixes. Example: 270072103-001FWD20.\nA PO value may be a name or words, such as JOHN MOODY. Copy it if it appears in the correct PO field.\nNever take the PO number from a different field such as Job Name, Customer Number, Salesperson, or Order Number.\nUse null for po_number only if the PO field is absent or empty.\naccount_number: The account or customer number for this bill, verbatim.\nservice_address: The service or premise address for utilities, verbatim.\npayment_terms: Copy the printed payment terms verbatim, for example NET 10TH PROX. Never derive payment terms from the due date.\ncharge_summary: At most 8 words describing what is billed, using the document's own words, such as electric service, HVAC parts, or Google Ads.\ncurrent_charges: On utility and recurring bills, copy the printed charges for the current period only, excluding previous balances, payments, and carried-forward amounts. Use null if not printed.\nprevious_balance: Copy the printed previous or past-due balance, if any.\nDates: Copy dates as printed.\ninvoice_total: Copy the printed Invoice Total, Total Due, Amount Due, or Balance Due for this invoice.\namount_due: Copy the printed amount due. Never calculate invoice_total or amount_due.\nIGNORE IRRELEVANT TEXT\n\nIgnore warranty, legal, policy, remittance, and marketing text unless it contains one of the requested fields.\n\nSTATEMENTS\n\nIf document_type is STATEMENT:\n- Fill the statement object.\n- Set invoices to an empty array.\n- Ignore invoice copies attached after the statement.\n- Record each transaction once.\n- Payments and credits are transactions, not invoices.\n\nEXCEPTIONS\n\nList important fields explicitly labeled on a valid billing document but unreadable. Do not use exceptions for ordinary non-billing documents.\n\nOUTPUT STRUCTURE\n\nReturn exactly this JSON structure, with every key present:\n\n{\n  \"document_type\": null,\n  \"document_title\": null,\n  \"vendor\": {\n    \"name\": null,\n    \"account\": null,\n    \"address\": null,\n    \"city\": null,\n    \"state\": null,\n    \"zip\": null\n  },\n  \"customer\": {\n    \"name\": null,\n    \"account\": null,\n    \"address\": null,\n    \"city\": null,\n    \"state\": null,\n    \"zip\": null\n  },\n  \"ship_to\": {\n    \"name\": null,\n    \"street\": null,\n    \"city\": null,\n    \"state\": null,\n    \"zip\": null,\n    \"full_address\": null\n  },\n  \"invoices\": [\n    {\n      \"invoice_number\": null,\n      \"document_type\": null,\n      \"invoice_date\": null,\n      \"due_date\": null,\n      \"payment_terms\": null,\n      \"po_number\": null,\n      \"account_number\": null,\n      \"job_number\": null,\n      \"service_address\": null,\n      \"charge_summary\": null,\n      \"subtotal\": null,\n      \"freight\": null,\n      \"tax\": null,\n      \"invoice_total\": null,\n      \"amount_due\": null,\n      \"current_charges\": null,\n      \"previous_balance\": null\n    }\n  ],\n  \"statement\": null,\n  \"exceptions\": []\n}\n\nSTATEMENT OBJECT STRUCTURE\n\nWhen document_type is STATEMENT, use this statement object:\n\n{\n  \"statement_date\": null,\n  \"account_number\": null,\n  \"due_date\": null,\n  \"previous_balance\": null,\n  \"payments\": null,\n  \"credits\": null,\n  \"current_charges\": null,\n  \"amount_due\": null,\n  \"transactions\": [\n    {\n      \"date\": null,\n      \"type\": null,\n      \"invoice_number\": null,\n      \"reference\": null,\n      \"po_number\": null,\n      \"amount\": null,\n      \"balance\": null\n    }\n  ]\n}\n\nFor NOT_A_VALID_PDF:\n- Return the main JSON structure.\n- Set document_type to NOT_A_VALID_PDF.\n- Set invoices to [].\n- Set statement to null.\n- Set exceptions to [].\n- Leave vendor, customer, and ship_to fields null, except document_title if readable.\n\nEnsure the output is syntactically valid JSON and contains no text outside the JSON object.`\n  },\n  {\n    role: 'user',\n    content:\n      'Email subject: ' + ($json.__meta?.subject ?? '') +\n      '\\nFile name: ' + ($json.__meta?.file_name ?? '') +\n      '\\nEmail body: ' + ($json.__meta?.body_preview ?? '') +\n      '\\nDocument source: ' + ($json.source ?? 'PDF') +\n      '\\n\\nDocument text:\\n' + ($json.text ?? '')\n  }\n] }}"
+              "value": "={{ [\n  {\n    role: 'system',\n    content: `Return ONLY valid JSON. No markdown, no code fences, no commentary.\n\nYou are an accounts-payable document reader. First validate the document type before extracting any billing information. Transcribe values exactly as printed. Do not guess, calculate, derive codes, or invent missing values. If a value is not printed, use null.\n\nMONEY RULE (applies to every amount in every section, including statements and every transaction):\nMoney: Return every monetary amount as a JSON string, never a bare JSON number. Use digits and one decimal point only, with no currency symbols or commas. A negative amount starts with a minus sign, for example \"-234.89\". Copy the amount exactly as printed. Never round, calculate, or repeat digits.\n\nSTAGE 0: DOCUMENT VALIDATION\n\nBefore extracting fields, determine whether the document is a valid billing document.\n\nThe document_type must be exactly one of:\n- INVOICE\n- CREDIT_MEMO\n- STATEMENT\n- MIXED\n- NOT_A_VALID_PDF\n\nDOCUMENT TYPE RULES\n\nINVOICE:\nA genuine supplier bill requesting payment for goods or services. This includes utility bills and recurring service bills with current-period charges, even if previous balances or payments are also shown.\n\nCREDIT_MEMO:\nA genuine supplier-issued credit memo, credit note, or credit document that adjusts or reverses charges.\n\nSTATEMENT:\nAn account statement summarizing outstanding balances, past invoices, payments, credits, or transactions owed to a supplier. If a statement is followed by copies of invoices it lists, classify the overall document as STATEMENT and do not extract those invoice copies separately.\n\nMIXED:\nA document containing more than one genuine INVOICE or CREDIT_MEMO and no statement as the primary document.\n\nNOT_A_VALID_PDF:\nUse this value when the document is not a valid billing document or does not contain sufficient recognizable billing-document content to process.\n\nExamples include:\n- Purchase orders\n- Quotes and estimates\n- Sales orders\n- Delivery receipts and packing slips\n- Proofs of delivery\n- Product catalogs\n- Advertisements and marketing materials\n- Contracts and general correspondence\n- Reports and unrelated documents\n- Blank PDFs\n- Corrupted or unreadable document content\n- Documents with no recognizable billing information\n\nVALIDATION RULES\n\nA PDF filename or .pdf extension does not prove that the document is a valid billing document.\nA vendor name, customer name, PO number, date, amount, or payment terms alone does not prove that a document is an invoice.\nA purchase order is NOT_A_VALID_PDF for this billing workflow, even if it contains prices, totals, vendor details, and a PO number.\nA quote or estimate is NOT_A_VALID_PDF even if it shows payment terms or an estimated total.\nA delivery receipt or packing slip is NOT_A_VALID_PDF even if it references an invoice or PO number.\nA genuine supplier invoice remains INVOICE if it also shows previous balances, payments, or credits, provided it contains current-period charges.\nDo not classify a genuine billing document as NOT_A_VALID_PDF merely because an optional field is missing.\nIf a valid billing document has some unreadable fields, extract the readable values and record important unreadable fields in exceptions.\nIf the document is clearly not a billing document, do not extract billing information.\nIf the document is blank, corrupted, or has no usable document text, return NOT_A_VALID_PDF.\nNever invent invoice details to force a document into a billing category.\nNON-BILLING DOCUMENT RESPONSE\n\nIf document_type is NOT_A_VALID_PDF, immediately return the required JSON structure with:\n- document_type set to NOT_A_VALID_PDF\n- document_title set to the printed title if readable, otherwise null\n- vendor fields set to null\n- customer fields set to null\n- ship_to fields set to null\n- invoices set to an empty array\n- statement set to null\n- exceptions set to an empty array\n\nDo not extract invoice numbers, PO numbers, amounts, addresses, payment terms, or other billing fields from non-billing documents.\n\nSTAGE 1: HEADER AND TOTALS ONLY\n\nOnly for valid billing documents, read the document header and totals. Do NOT list line items.\n\nThe document may be a PDF or the body of an email, such as a utility bill notice. Read both in the same way.\n\ndocument_title:\nCopy the document's printed title verbatim, such as INVOICE, CREDIT MEMO, STATEMENT, PURCHASE ORDER, or QUOTE.\n\nPARTIES\n\nvendor: The company issuing the document.\ncustomer: The bill-to or sold-to party. customer.account is the customer or account number assigned by the vendor, if printed.\nship_to: The block under Ship To, Deliver To, or Job Site, including name, street, city, state, ZIP code, and full address.\nIn two-column PDFs, Bill To and Ship To information may be interleaved or out of order. Keep these addresses separate.\nIf you cannot determine which address lines belong to Ship To, provide your best reading and add ship_to_uncertain to exceptions.\n\nSHIP-TO FALLBACK RULE (applies whenever a Ship To block is not printed):\nIf the document has no Ship To, Deliver To, or Job Site block, or that block is present but empty so that every ship_to field would be null, then the only address printed for the customer (the Bill To or Sold To address) is treated as the ship_to address and NOT as the customer address.\nWhen this rule applies:\n- Copy that address into ship_to exactly as printed: ship_to.name from the Bill To or Sold To name, ship_to.street, ship_to.city, ship_to.state, ship_to.zip, and ship_to.full_address.\n- Set customer.address, customer.city, customer.state, and customer.zip to null.\n- Keep customer.name and customer.account as printed.\n- Do not apply this rule when a real Ship To block exists. In that case keep the Bill To address in the customer fields and the Ship To address in the ship_to fields, as normal.\n- Do not apply this rule if no customer address is printed at all. In that case leave ship_to fields null.\n- Do not copy the vendor address into ship_to or customer.\n- This rule does not require adding anything to exceptions.\n\nINVOICES\n\nCreate one object per invoice number.\nIf one invoice lists several PO numbers, create one object per PO.\nEach invoice object's document_type must be INVOICE or CREDIT_MEMO.\nA negative total or an explicitly identified supplier credit memo must be classified as CREDIT_MEMO.\npo_number: Copy the value in the field labeled PO, P.O., PO Number, Purchase Order, Cust PO, or Customer PO Number exactly as printed, preserving hyphens, spaces, letters, and suffixes. Example: 270072103-001FWD20. The PO value runs to the end of its field: keep trailing letters and digits such as -2cp or -1EL attached to the PO, and never move any part of the PO into payment_terms.\nA PO value may be a name or words, such as JOHN MOODY. Copy it if it appears in the correct PO field.\nNever take the PO number from a different field such as Job Name, Customer Number, Salesperson, or Order Number.\nUse null for po_number only if the PO field is absent or empty.\naccount_number: The account or customer number for this bill, verbatim.\nservice_address: The service or premise address for utilities, verbatim.\npayment_terms: Copy the printed payment terms verbatim, for example NET 10TH PROX. Never derive payment terms from the due date.\ncharge_summary: At most 8 words describing what is billed, using the document's own words, such as electric service, HVAC parts, or Google Ads.\ncurrent_charges: On utility and recurring bills, copy the printed charges for the current period only, excluding previous balances, payments, and carried-forward amounts. Use null if not printed.\nprevious_balance: Copy the printed previous or past-due balance, if any.\nDates: Copy dates as printed.\ninvoice_total: Copy the printed Invoice Total, Total Due, Amount Due, or Balance Due for this invoice.\namount_due: Copy the printed amount due. Never calculate invoice_total or amount_due.\nIGNORE IRRELEVANT TEXT\n\nIgnore warranty, legal, policy, remittance, and marketing text unless it contains one of the requested fields.\n\nSTATEMENTS\n\nIf document_type is STATEMENT:\n- Fill the statement object.\n- Set invoices to an empty array.\n- Ignore invoice copies attached after the statement.\n- Record each transaction once.\n- Payments and credits are transactions, not invoices.\n\nEXCEPTIONS\n\nList important fields explicitly labeled on a valid billing document but unreadable. Do not use exceptions for ordinary non-billing documents.\n\nOUTPUT STRUCTURE\n\nReturn exactly this JSON structure, with every key present:\n\n{\n  \"document_type\": null,\n  \"document_title\": null,\n  \"vendor\": {\n    \"name\": null,\n    \"account\": null,\n    \"address\": null,\n    \"city\": null,\n    \"state\": null,\n    \"zip\": null\n  },\n  \"customer\": {\n    \"name\": null,\n    \"account\": null,\n    \"address\": null,\n    \"city\": null,\n    \"state\": null,\n    \"zip\": null\n  },\n  \"ship_to\": {\n    \"name\": null,\n    \"street\": null,\n    \"city\": null,\n    \"state\": null,\n    \"zip\": null,\n    \"full_address\": null\n  },\n  \"invoices\": [\n    {\n      \"invoice_number\": null,\n      \"document_type\": null,\n      \"invoice_date\": null,\n      \"due_date\": null,\n      \"payment_terms\": null,\n      \"po_number\": null,\n      \"account_number\": null,\n      \"job_number\": null,\n      \"service_address\": null,\n      \"charge_summary\": null,\n      \"subtotal\": null,\n      \"freight\": null,\n      \"tax\": null,\n      \"invoice_total\": null,\n      \"amount_due\": null,\n      \"current_charges\": null,\n      \"previous_balance\": null\n    }\n  ],\n  \"statement\": null,\n  \"exceptions\": []\n}\n\nSTATEMENT OBJECT STRUCTURE\n\nWhen document_type is STATEMENT, use this statement object:\n\n{\n  \"statement_date\": null,\n  \"account_number\": null,\n  \"due_date\": null,\n  \"previous_balance\": null,\n  \"payments\": null,\n  \"credits\": null,\n  \"current_charges\": null,\n  \"amount_due\": null,\n  \"transactions\": [\n    {\n      \"date\": null,\n      \"type\": null,\n      \"invoice_number\": null,\n      \"reference\": null,\n      \"po_number\": null,\n      \"amount\": null,\n      \"balance\": null\n    }\n  ]\n}\n\nFor NOT_A_VALID_PDF:\n- Return the main JSON structure.\n- Set document_type to NOT_A_VALID_PDF.\n- Set invoices to [].\n- Set statement to null.\n- Set exceptions to [].\n- Leave vendor, customer, and ship_to fields null, except document_title if readable.\n\nEnsure the output is syntactically valid JSON and contains no text outside the JSON object.`\n  },\n  {\n    role: 'user',\n    content:\n      'Email subject: ' + ($json.__meta?.subject ?? '') +\n      '\\nFile name: ' + ($json.__meta?.file_name ?? '') +\n      '\\nEmail body: ' + ($json.__meta?.body_preview ?? '') +\n      '\\nDocument source: ' + ($json.source ?? 'PDF') +\n      '\\n\\nDocument text:\\n' + ($json.text ?? '')\n  }\n] }}"
             },
             {
               "name": "thinking",
@@ -299,10 +299,11 @@
       },
       "credentials": {
         "gmailOAuth2": {
-          "id": "Aftj6gLNK1h0LoyX",
-          "name": "my account"
+          "id": "v7zEv46gaNt0IQpa",
+          "name": "Gmail account 2"
         }
-      }
+      },
+      "disabled": true
     },
     {
       "id": "d5bf0b35-2ee1-442e-80f3-cf582feba894",
@@ -754,6 +755,544 @@
       "alwaysOutputData": true
     },
     {
+      "id": "af00e2f0-b3d2-4656-b99b-219c3bf2451a",
+      "name": "Log Email Without Invoice",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        4672,
+        10320
+      ],
+      "parameters": {
+        "dataTableId": {
+          "__rl": true,
+          "value": "YQpLj9gtvsYErCBh",
+          "mode": "list",
+          "cachedResultName": "New Business Processing Datatable",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/YQpLj9gtvsYErCBh"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "message_id": "={{ $json.message_id ?? '' }}",
+            "subject": "={{ $json.subject ?? '' }}",
+            "attachment_name": "",
+            "document_type": "NO_INVOICE_CONTENT",
+            "processing_status": "SKIPPED",
+            "exception_reason": "NO_INVOICE_CONTENT: No PDF attachment and no invoice content in the email body",
+            "document_id": ""
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "document_id",
+              "displayName": "document_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "document_type",
+              "displayName": "document_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "vendor_name",
+              "displayName": "vendor_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "invoice_number",
+              "displayName": "invoice_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "po_number",
+              "displayName": "po_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "location_id",
+              "displayName": "location_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "location_name",
+              "displayName": "location_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "gl_code",
+              "displayName": "gl_code",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "gl_name",
+              "displayName": "gl_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "sage_bill_id",
+              "displayName": "sage_bill_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "subject",
+              "displayName": "subject",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "attachment_name",
+              "displayName": "attachment_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "processing_status",
+              "displayName": "processing_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "exception_reason",
+              "displayName": "exception_reason",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "message_id",
+              "displayName": "message_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "total_amount",
+              "displayName": "total_amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "invoice_price_mismatch",
+              "displayName": "invoice_price_mismatch",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "invoice_qty_mismatch",
+              "displayName": "invoice_qty_mismatch",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "invoice_location_mismatch",
+              "displayName": "invoice_location_mismatch",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "invoice_vendor_mismatch",
+              "displayName": "invoice_vendor_mismatch",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "account_number_match",
+              "displayName": "account_number_match",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "utility_invoice_match_status",
+              "displayName": "utility_invoice_match_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "payment_terms",
+              "displayName": "payment_terms",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "590d2ef1-5b63-49f2-a323-4a6591531f67",
+      "name": "Log Non-Billing Document",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        5808,
+        10320
+      ],
+      "parameters": {
+        "dataTableId": {
+          "__rl": true,
+          "value": "YQpLj9gtvsYErCBh",
+          "mode": "list",
+          "cachedResultName": "New Business Processing Datatable",
+          "cachedResultUrl": "/projects/Jp0kHmOGGdb3gS0P/datatables/YQpLj9gtvsYErCBh"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "message_id": "={{ $json.message_id ?? '' }}",
+            "subject": "={{ $json.subject ?? '' }}",
+            "attachment_name": "={{ $json.file_name ?? '' }}",
+            "document_type": "={{ $json.document_type ?? '' }}",
+            "processing_status": "SKIPPED",
+            "exception_reason": "={{ ($json.status ?? 'SKIPPED') + ': ' + ($json.reason ?? 'Not a billing document') }}",
+            "document_id": "={{ $json.doc_id ?? '' }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "document_id",
+              "displayName": "document_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "document_type",
+              "displayName": "document_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "vendor_name",
+              "displayName": "vendor_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "invoice_number",
+              "displayName": "invoice_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "po_number",
+              "displayName": "po_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "location_id",
+              "displayName": "location_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "location_name",
+              "displayName": "location_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "gl_code",
+              "displayName": "gl_code",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "gl_name",
+              "displayName": "gl_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "sage_bill_id",
+              "displayName": "sage_bill_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "subject",
+              "displayName": "subject",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "attachment_name",
+              "displayName": "attachment_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "processing_status",
+              "displayName": "processing_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "exception_reason",
+              "displayName": "exception_reason",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "message_id",
+              "displayName": "message_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "total_amount",
+              "displayName": "total_amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "invoice_price_mismatch",
+              "displayName": "invoice_price_mismatch",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "invoice_qty_mismatch",
+              "displayName": "invoice_qty_mismatch",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "invoice_location_mismatch",
+              "displayName": "invoice_location_mismatch",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "invoice_vendor_mismatch",
+              "displayName": "invoice_vendor_mismatch",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "account_number_match",
+              "displayName": "account_number_match",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "utility_invoice_match_status",
+              "displayName": "utility_invoice_match_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "payment_terms",
+              "displayName": "payment_terms",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
       "id": "8d8dea77-29a6-4ce3-bc81-35f0e6890a71",
       "name": "Loop Invoices",
       "type": "n8n-nodes-base.splitInBatches",
@@ -1047,6 +1586,47 @@
       "onError": "continueRegularOutput"
     },
     {
+      "id": "ef6b1c21-b94e-45af-918a-4d920f345089",
+      "name": "Messages Fully Posted",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6864,
+        9888
+      ],
+      "parameters": {
+        "jsCode": "// An email is \"done\" only when every document it produced was POSTED to Sage.\n// Any exception, reject, credit memo or inactive-location doc keeps the email unread for AP.\nconst docs = $('Parse & Validate').all().map(i => i.json);          // every document, incl. rejects\nlet postedIds = new Set();\ntry {\n  postedIds = new Set(\n    $('Mark Posted').all().map(i => i.json)\n      .filter(r => r && r.processing_status === 'POSTED' && r.sage_bill_id)\n      .map(r => r.document_id)\n  );\n} catch (e) { /* Mark Posted did not run this execution */ }\n\nconst byMsg = new Map();\nfor (const d of docs) {\n  if (!d.message_id) continue;\n  const g = byMsg.get(d.message_id) || { total: 0, posted: 0 };\n  g.total++;\n  if (postedIds.has(d.doc_id)) g.posted++;\n  byMsg.set(d.message_id, g);\n}\nreturn [...byMsg.entries()]\n  .filter(([, g]) => g.total > 0 && g.posted === g.total)\n  .map(([message_id, g]) => ({ json: { message_id, documents: g.total } }));"
+      }
+    },
+    {
+      "id": "43f0921b-fb4b-4a86-b9ab-dfeb6de30349",
+      "name": "Microsoft Outlook: “Mark Message Read”",
+      "type": "n8n-nodes-base.microsoftOutlook",
+      "typeVersion": 2,
+      "position": [
+        7072,
+        9888
+      ],
+      "parameters": {
+        "operation": "update",
+        "messageId": {
+          "__rl": true,
+          "value": "={{ $json.message_id }}",
+          "mode": "id"
+        },
+        "updateFields": {
+          "isRead": true
+        }
+      },
+      "credentials": {
+        "microsoftOutlookOAuth2Api": {
+          "id": "cAQ9oZ8v24e2Av5G",
+          "name": "Microsoft Outlook account 5"
+        }
+      },
+      "webhookId": "0ee90537-04cb-4704-9877-840601a5cca4"
+    },
+    {
       "id": "8c8fa737-be96-43b0-b6ea-8b9238c47b36",
       "name": "Needs Location Fallback?",
       "type": "n8n-nodes-base.if",
@@ -1138,7 +1718,11 @@
           ]
         },
         "filters": {
-          "hasAttachments": true
+          "hasAttachments": true,
+          "foldersToInclude": [
+            "AAMkAGI0ZjViODRkLWNjNTgtNGZkMC04YTAwLTE3OGY1NzYyMDRjNgAuAAAAAABao6UrTsC6RZcA0yi5Cc7-AQC9TCePmpD8TqYDpfqnWTccAAAAAAEMAAA="
+          ],
+          "readStatus": "unread"
         },
         "options": {
           "downloadAttachments": true
@@ -1149,20 +1733,19 @@
           "id": "cAQ9oZ8v24e2Av5G",
           "name": "Microsoft Outlook account 5"
         }
-      },
-      "disabled": true
+      }
     },
     {
-      "id": "121b03fe-ce7a-474b-bc93-f712ee4cb775",
+      "id": "e5234da4-e478-444a-a9f5-6fd168199dd7",
       "name": "Parse & Validate",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        5360,
+        5344,
         10096
       ],
       "parameters": {
-        "jsCode": "\n/*\n * Parse LLM output, normalize, validate, and split into one item per invoice.\n * Uses:\n *   - Extract from File: extracted PDF text and PDF metadata\n *   - Extract PDFs: Outlook email and attachment metadata\n *\n * Bad documents become EXCEPTION items instead of stopping the batch.\n */\n\nconst llmItems = $input.all();\nconst extractedItems = $('Prep Docs').all();   // text + source + __meta, aligned 1:1 with the LLM items\nconst TOL = $('Build Config').first().json.cfg.INV_PROC_CONFIG.validation_tolerance;\n\n\nconst out = [];\n\nconst errText = e =>\n  typeof e === 'string' ? e : (e?.message || JSON.stringify(e));\n\nconst round2 = n => Math.round(n * 100) / 100;\n\n/*\n * Strict amount parser.\n * Accepts JSON numbers and printed amounts: 1,234.56  -234.89  (234.89)  234.89-  $1,234.56\n * Anything else is REJECTED (bad = true), never \"cleaned up\". The old version stripped every\n * non-digit character, so a corrupted token such as \"-234.!89!!89\" silently became -234.8989.\n */\nconst AMOUNT_RE = /^(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?$|^\\.\\d+$/;\n\nfunction parseAmount(v) {\n  if (v === null || v === undefined || v === '') return { value: null, bad: false };\n  if (typeof v === 'number') {\n    return Number.isFinite(v) ? { value: v, bad: false } : { value: null, bad: true };\n  }\n\n  let s = String(v).trim();\n  if (!s) return { value: null, bad: false };\n\n  let neg = false;\n  if (/^\\(.*\\)$/.test(s)) { neg = true; s = s.slice(1, -1).trim(); }\n  if (/-$/.test(s)) { neg = true; s = s.slice(0, -1).trim(); }\n  if (/^[-\\u2212\\u2013]/.test(s)) { neg = true; s = s.slice(1).trim(); }\n  s = s.replace(/^[$\\u20AC\\u00A3]\\s*/, '');\n\n  if (!AMOUNT_RE.test(s)) return { value: null, bad: true };\n\n  const n = Number(s.replace(/,/g, ''));\n  if (!Number.isFinite(n)) return { value: null, bad: true };\n\n  return { value: neg ? -n : n, bad: false };\n}\n\nconst num = v => parseAmount(v).value;\n\n/*\n * Every number printed in the document, as integer cents.\n * Used to prove that each amount the LLM returned really appears in the source text.\n */\nfunction buildSrcCents(text) {\n  const set = new Set();\n  const add = s => { const n = Number(s); if (Number.isFinite(n)) set.add(Math.round(n * 100)); };\n  for (const t of String(text).match(/\\d[\\d,]*(?:\\.\\d+)?|\\.\\d+/g) || []) {\n    add(t.replace(/,/g, ''));\n    // PDF text extraction can glue two numbers together (quantity 3 + price 149.99 -> 3149.99).\n    // For a decimal token with no thousands separators and 4+ integer digits, also accept its trailing digit groups.\n    const m = t.match(/^(\\d{4,})(\\.\\d+)$/);\n    if (m) for (let i = 1; i < m[1].length; i++) add(m[1].slice(i) + m[2]);\n  }\n  return set;\n}\n\n// Document types the prompt defines. Anything else is never processed as an invoice.\nconst ALLOWED_DOC_TYPES = ['INVOICE', 'CREDIT_MEMO', 'STATEMENT', 'MIXED', 'NOT_A_VALID_PDF'];\nconst ALLOWED_INVOICE_TYPES = ['INVOICE', 'CREDIT_MEMO'];\nconst normType = v => String(v ?? '').trim().toUpperCase().replace(/[\\s-]+/g, '_');\n\n// Statement amounts get the same checks as invoice amounts: readable, and present in the document text.\nfunction checkStatementAmounts(st, srcCents) {\n  const problems = [];\n  const chk = (v, label) => {\n    const r = parseAmount(v);\n    if (r.bad) problems.push(`${label} unreadable \"${String(v).slice(0, 40)}\"`);\n    else if (r.value !== null && r.value !== 0 && !srcCents.has(Math.round(Math.abs(r.value) * 100)))\n      problems.push(`${label} ${r.value} not found in document text`);\n  };\n  for (const k of ['previous_balance', 'payments', 'credits', 'current_charges', 'amount_due']) chk(st?.[k], k);\n  (Array.isArray(st?.transactions) ? st.transactions : []).forEach((t, i) => {\n    chk(t?.amount, `transaction ${i + 1} amount`);\n    chk(t?.balance, `transaction ${i + 1} balance`);\n  });\n  return problems;\n}\n\nconst MONEY_KEYS = [\n  'subtotal', 'freight', 'tax', 'invoice_total',\n  'amount_due', 'current_charges', 'previous_balance'\n];\n\nfunction normalizeStatement(st, warnings) {\n  if (!st || typeof st !== 'object') return st ?? null;\n  const o = { ...st };\n  const fix = (obj, k, label) => {\n    if (!(k in obj)) return;\n    const r = parseAmount(obj[k]);\n    if (r.bad) warnings.push(`Unreadable statement ${label} \"${String(obj[k]).slice(0, 40)}\"`);\n    obj[k] = r.value;\n  };\n  for (const k of ['previous_balance', 'payments', 'credits', 'current_charges', 'amount_due']) fix(o, k, k);\n  if (Array.isArray(o.transactions)) {\n    o.transactions = o.transactions.map((t, i) => {\n      const x = { ...(t || {}) };\n      fix(x, 'amount', `transaction ${i + 1} amount`);\n      fix(x, 'balance', `transaction ${i + 1} balance`);\n      return x;\n    });\n  }\n  return o;\n}\n\nconst pad = x => String(x).padStart(2, '0');\n\nfunction isoDate(v) {\n  if (!v) return null;\n\n  const s = String(v).trim();\n\n  // YYYY-MM-DD or YYYY-MM-DD followed by a time\n  let m = s.match(/^(\\d{4})-(\\d{1,2})-(\\d{1,2})/);\n\n  if (m) {\n    return `${m[1]}-${pad(m[2])}-${pad(m[3])}`;\n  }\n\n  // MM/DD/YYYY, MM-DD-YYYY, or MM.DD.YYYY\n  m = s.match(/^(\\d{1,2})[\\/.-](\\d{1,2})[\\/.-](\\d{2,4})$/);\n\n  if (m) {\n    const year = m[3].length === 2 ? '20' + m[3] : m[3];\n    return `${year}-${pad(m[1])}-${pad(m[2])}`;\n  }\n\n  const d = new Date(s);\n\n  if (!isNaN(d.getTime())) {\n    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;\n  }\n\n  return null;\n}\n\nfunction parseLLM(resp) {\n  if (!resp || resp.error) {\n    return {\n      error: 'LLM request failed' +\n        (resp?.error ? `: ${errText(resp.error)}` : '')\n    };\n  }\n\n  const choice = resp.choices?.[0];\n  const raw = choice?.message?.content;\n\n  const finish = choice?.finish_reason;\n  if (finish === 'length') {\n    return { error: 'LLM output truncated (finish_reason=length); raise glm_header_max_tokens' };\n  }\n  if (finish !== undefined && finish !== null && finish !== 'stop') {\n    return { error: `LLM did not finish normally (finish_reason=${finish})` };\n  }\n\n  if (!raw) {\n    return { error: 'LLM returned empty content' };\n  }\n\n  const cleaned = String(raw)\n    .replace(/^```(?:json)?\\s*/i, '')\n    .replace(/\\s*```\\s*$/, '')\n    .trim();\n\n  try {\n    return { data: JSON.parse(cleaned) };\n  } catch (e) {\n    const a = cleaned.indexOf('{');\n    const b = cleaned.lastIndexOf('}');\n\n    if (a >= 0 && b > a) {\n      try {\n        return { data: JSON.parse(cleaned.slice(a, b + 1)) };\n      } catch (e2) {\n        // Continue to the parsing error below.\n      }\n    }\n\n    const at = Number((/position (\\d+)/.exec(e.message) || [])[1]);\n    const near = Number.isFinite(at)\n      ? ' near: ' + JSON.stringify(cleaned.slice(Math.max(0, at - 30), at + 30))\n      : '';\n\n    return {\n      error: 'Could not parse LLM JSON: ' + e.message + near\n    };\n  }\n}\n\nconst pick = (o, keys) =>\n  Object.fromEntries(keys.map(k => [k, o?.[k] ?? null]));\n\n/*\n * Normalize one invoice or credit memo.\n */\nfunction buildInvoice(shared, inv, k, count, parentDocType, srcCents) {\n  const warnings = [];\n\n  // Strict amounts: unreadable or not-in-document values fail this invoice instead of flowing on.\n  const m = {};\n  const integrity = [];\n\n  for (const key of MONEY_KEYS) {\n    const r = parseAmount(inv[key]);\n    m[key] = r.value;\n\n    if (r.bad) {\n      integrity.push(`${key} unreadable \"${String(inv[key]).slice(0, 40)}\"`);\n    } else if (\n      r.value !== null &&\n      r.value !== 0 &&\n      !srcCents.has(Math.round(Math.abs(r.value) * 100))\n    ) {\n      integrity.push(`${key} ${r.value} not found in document text`);\n    }\n  }\n\n  const individualDocType = normType(\n    inv.document_type ||\n    (String(inv.invoice_category || '').toUpperCase() === 'CREDIT_MEMO'\n      ? 'CREDIT_MEMO'\n      : parentDocType === 'MIXED'\n        ? 'INVOICE'\n        : parentDocType || 'INVOICE')\n  );\n\n  const lines = (Array.isArray(inv.line_items) ? inv.line_items : [])\n    .map(li => ({\n      sku: li.sku ?? null,\n      description: li.description ?? null,\n      quantity: num(li.quantity),\n      unit_price: num(li.unit_price),\n      amount: num(li.amount)\n    }))\n    .filter(l => l.sku || l.description || l.amount !== null);\n\n  const invoice = {\n    invoice_number: inv.invoice_number\n      ? String(inv.invoice_number).trim()\n      : null,\n\n    invoice_date: isoDate(inv.invoice_date),\n    invoice_date_raw: inv.invoice_date ?? null,\n\n    due_date: isoDate(inv.due_date),\n    due_date_raw: inv.due_date ?? null,\n\n    payment_terms: inv.payment_terms ?? inv.term ?? null,\n\n    po_number_raw: inv.po_number\n      ? String(inv.po_number).trim()\n      : null,\n\n    account_number: inv.account_number\n      ? String(inv.account_number).trim()\n      : null,\n\n    job_number: inv.job_number ?? null,\n    service_address: inv.service_address ?? null,\n    charge_summary: inv.charge_summary ?? null,\n\n    subtotal: m.subtotal,\n    freight: m.freight,\n    tax: m.tax,\n    invoice_total: m.invoice_total,\n    amount_due: m.amount_due,\n    current_charges: m.current_charges,\n    previous_balance: m.previous_balance,\n\n    line_items: lines\n  };\n\n  if (inv.due_date && !invoice.due_date) {\n    warnings.push(`Unreadable due date \"${inv.due_date}\"`);\n  }\n\n  /*\n   * Use printed totals when present.\n   * Derive totals only when they are missing.\n   */\n  const priced = lines.filter(l => l.amount !== null);\n  const lineSum = round2(\n    priced.reduce((sum, l) => sum + l.amount, 0)\n  );\n\n  if (invoice.subtotal === null && priced.length) {\n    invoice.subtotal = lineSum;\n    warnings.push('Subtotal derived from line items');\n  }\n\n  if (invoice.invoice_total === null) {\n    if (invoice.amount_due !== null) {\n      invoice.invoice_total = invoice.amount_due;\n      warnings.push('Invoice total taken from amount due');\n    } else if (invoice.subtotal !== null) {\n      invoice.invoice_total = round2(\n        invoice.subtotal +\n        (invoice.tax ?? 0) +\n        (invoice.freight ?? 0)\n      );\n\n      warnings.push(\n        'Invoice total derived from subtotal + tax + freight'\n      );\n    }\n  }\n\n  // Arithmetic checks: warnings only.\n  for (const line of lines) {\n    if (\n      line.quantity !== null &&\n      line.unit_price !== null &&\n      line.amount !== null &&\n      Math.abs(\n        round2(line.quantity * line.unit_price) - line.amount\n      ) > TOL\n    ) {\n      warnings.push(\n        `Line ${line.sku ?? line.description}: qty × price ≠ amount`\n      );\n    }\n  }\n\n  if (\n    priced.length &&\n    invoice.subtotal !== null &&\n    Math.abs(lineSum - invoice.subtotal) > TOL &&\n    Math.abs(\n      lineSum + (invoice.freight ?? 0) - invoice.subtotal\n    ) > TOL\n  ) {\n    warnings.push(\n      `Line items sum ${lineSum} ≠ subtotal ${invoice.subtotal}`\n    );\n  }\n\n  if (\n    invoice.subtotal !== null &&\n    invoice.invoice_total !== null\n  ) {\n    const expected = round2(\n      invoice.subtotal +\n      (invoice.tax ?? 0) +\n      (invoice.freight ?? 0)\n    );\n\n    const subtotalPlusTax = round2(\n      invoice.subtotal + (invoice.tax ?? 0)\n    );\n\n    if (\n      Math.abs(expected - invoice.invoice_total) > TOL &&\n      Math.abs(subtotalPlusTax - invoice.invoice_total) > TOL\n    ) {\n      warnings.push(\n        `Subtotal + tax + freight (${expected}) ≠ total ${invoice.invoice_total}`\n      );\n    }\n  }\n\n  // Utility bills sometimes have no printed invoice number.\n  if (\n    !invoice.invoice_number &&\n    invoice.account_number &&\n    invoice.invoice_date\n  ) {\n    invoice.invoice_number =\n      `${invoice.account_number.replace(/[^A-Za-z0-9]/g, '')}-` +\n      `${invoice.invoice_date.replace(/-/g, '')}`;\n\n    warnings.push(\n      `No invoice number printed; using ${invoice.invoice_number}`\n    );\n  }\n\n  // Printed totals must add up. A digit-level corruption almost always breaks this sum.\n  // Invoices with deposits, discounts or partial payments printed between subtotal and total can fail here legitimately; they go to review instead of posting.\n  const printedTotal = m.invoice_total ?? m.amount_due;\n  const totalsBad = m.subtotal !== null && printedTotal !== null &&\n    Math.abs(round2(m.subtotal + (m.tax ?? 0) + (m.freight ?? 0)) - printedTotal) > TOL &&\n    Math.abs(round2(m.subtotal + (m.tax ?? 0)) - printedTotal) > TOL;\n\n  const missing = [];\n\n  // No printed vendor name is OK on a PO invoice: the Direct flow takes the vendor from the ServiceTitan PO.\n  if (!shared.vendor?.name) {\n    if (invoice.po_number_raw) warnings.push('Vendor name not printed; will use the ServiceTitan PO vendor');\n    else missing.push('vendor name');\n  }\n  if (!invoice.invoice_number) missing.push('invoice number');\n  if (!invoice.invoice_date) missing.push('invoice date');\n  if (invoice.invoice_total === null) missing.push('invoice total');\n\n  /*\n   * Keep document_type and invoice_category at the top level\n   * so downstream routing can distinguish credit memos.\n   */\n  let invoiceCategory = inv.invoice_category ?? null;\n\n  if (\n    individualDocType === 'CREDIT_MEMO' &&\n    !invoiceCategory\n  ) {\n    invoiceCategory = 'CREDIT_MEMO';\n  }\n\n  const ctx = {\n    ...shared,\n\n    doc_id: `${shared.doc_id}-${k + 1}`,\n    invoice_index: k + 1,\n    invoice_count: count,\n\n    document_type: individualDocType,\n    invoice_category: invoiceCategory,\n\n    invoice,\n\n    warnings: [...(shared.warnings || []), ...warnings],\n\n    route: null,\n    status: null,\n    reason: null\n  };\n\n  if (!ALLOWED_INVOICE_TYPES.includes(individualDocType)) {\n    ctx.route = 'EXCEPTION';\n    ctx.status = 'UNSUPPORTED_DOCUMENT_TYPE';\n    ctx.reason = `Unsupported document_type \"${individualDocType || 'none'}\" on an invoice record`;\n  } else if (integrity.length) {\n    ctx.route = 'EXCEPTION';\n    ctx.status = 'EXTRACTION_FAILED';\n    ctx.reason = 'Amount check failed (LLM output does not match document text): ' + integrity.join('; ');\n  } else if (missing.length) {\n    ctx.route = 'EXCEPTION';\n    ctx.status = 'VALIDATION_FAILED';\n    ctx.reason = 'Missing: ' + missing.join(', ');\n  } else if (totalsBad) {\n    ctx.route = 'EXCEPTION';\n    ctx.status = 'TOTALS_MISMATCH';\n    ctx.reason = `Printed subtotal/tax/freight do not add up to printed total ${printedTotal}`;\n  }\n\n  return ctx;\n}\n\n/*\n * Process every LLM item separately.\n */\nfor (let i = 0; i < llmItems.length; i++) {\n  const extracted = extractedItems[i]?.json ?? {};\n  const meta = extracted.__meta ?? {};\n\n  const base = {\n    doc_id: `DOC-${Date.now()}-${i + 1}`,\n\n    message_id: meta.message_id ?? null,\n    subject: meta.subject ?? '',\n    body_preview: meta.body_preview ?? '',\n    from: meta.from ?? null,\n    received_at: meta.received_at ?? null,\n    file_name: meta.file_name ?? null,\n\n    page_count: extracted.numpages ?? null,\n    source: extracted.source ?? 'PDF',\n\n    warnings: [],\n    source_text: null\n  };\n\n  const fail = (status, reason, extra = {}) => {\n    out.push({\n      json: {\n        ...base,\n        ...extra,\n        route: 'EXCEPTION',\n        status,\n        reason\n      }\n    });\n  };\n\n  /*\n   * Extract from File returns PDF text in `text`.\n   * It does not return the old GLM OCR `md_results` field.\n   */\n  const pdfText = extracted.text;\n\n  if (\n    extracted.error ||\n    typeof pdfText !== 'string' ||\n    !pdfText.trim()\n  ) {\n    fail(\n      'EXTRACTION_FAILED',\n      'No document text (PDF text extraction failed or the email body was empty)' +\n      (extracted.error ? `: ${errText(extracted.error)}` : '')\n    );\n\n    continue;\n  }\n\n  base.source_text = pdfText;   // used by stage 2 (line items)\n  const srcCents = buildSrcCents(pdfText);\n\n  const parsed = parseLLM(llmItems[i].json);\n\n  if (parsed.error) {\n    fail('EXTRACTION_FAILED', parsed.error);\n    continue;\n  }\n\n  const d = parsed.data || {};\n\n  const docType = normType(d.document_type) || null;\n\n  const shared = {\n    ...base,\n\n    document_type: docType,\n    document_title: d.document_title ?? null,\n\n    vendor: pick(d.vendor, [\n      'name', 'account', 'address', 'city', 'state', 'zip'\n    ]),\n\n    customer: pick(d.customer, [\n      'name', 'account', 'address', 'city', 'state', 'zip'\n    ]),\n\n    ship_to: pick(d.ship_to, [\n      'name', 'street', 'city', 'state', 'zip', 'full_address'\n    ]),\n\n    llm_exceptions: Array.isArray(d.exceptions)\n      ? d.exceptions.map(String)\n      : []\n  };\n\n  // The document type must be one the prompt defines.\n  if (!ALLOWED_DOC_TYPES.includes(docType)) {\n    fail('UNSUPPORTED_DOCUMENT_TYPE', `Unsupported document_type \"${docType ?? 'none'}\" returned by the LLM`, shared);\n    continue;\n  }\n\n  // Not a billing document: never read invoice or statement data from it.\n  if (docType === 'NOT_A_VALID_PDF') {\n    fail('NOT_A_VALID_PDF', 'Not a billing document' + (d.document_title ? ` (title: ${d.document_title})` : ''), shared);\n    continue;\n  }\n\n  // Statements follow their own route, but only when the document itself is a STATEMENT\n  // (or a MIXED document that really carries statement transactions). An INVOICE is never turned into a statement.\n  // A statement may carry copies of its invoices after it: the statement wins and those invoices are ignored.\n  const stObj = d.statement && typeof d.statement === 'object' ? d.statement : null;\n  const stTxCount = Array.isArray(stObj?.transactions) ? stObj.transactions.length : 0;\n  const isStatement = docType === 'STATEMENT' || (docType === 'MIXED' && stTxCount > 0);\n\n  if (isStatement) {\n    if (!stObj) {\n      fail('STATEMENT_INCOMPLETE', 'Classified as STATEMENT but no statement data was returned', shared);\n      continue;\n    }\n    if (!stTxCount) {\n      fail('STATEMENT_INCOMPLETE', 'Statement has no transactions to reconcile', shared);\n      continue;\n    }\n    const stProblems = checkStatementAmounts(stObj, srcCents);\n    if (stProblems.length) {\n      fail('EXTRACTION_FAILED',\n        `Statement amount check failed (${stProblems.length}): ` + stProblems.slice(0, 10).join('; ') + (stProblems.length > 10 ? '; ...' : ''),\n        shared);\n      continue;\n    }\n\n    const stWarnings = [];\n    const ignored = Array.isArray(d.invoices) ? d.invoices.length : 0;\n    if (ignored) stWarnings.push(`${ignored} invoice(s) attached to the statement were ignored`);\n    const statement = normalizeStatement(stObj, stWarnings);\n\n    out.push({\n      json: {\n        ...shared,\n        document_type: 'STATEMENT',\n        warnings: [...(shared.warnings || []), ...stWarnings],\n        statement,\n        route: 'STATEMENT',\n        status: null,\n        reason: null\n      }\n    });\n\n    continue;\n  }\n\n  const invoices = Array.isArray(d.invoices)\n    ? d.invoices\n    : [];\n\n  /*\n   * MIXED does not automatically mean failure.\n   * If the LLM returned individual records, process each one.\n   */\n  if (docType === 'MIXED' && !invoices.length) {\n    fail(\n      'TRIAGE_MIXED',\n      'LLM classified the PDF as MIXED but returned no individual documents',\n      shared\n    );\n\n    continue;\n  }\n\n  if (!invoices.length) {\n    fail(\n      'NO_INVOICE_FOUND',\n      `No invoice found (document_type: ${docType ?? 'unknown'})`,\n      shared\n    );\n\n    continue;\n  }\n\n  const seen = new Set();\n\n  invoices.forEach((inv, k) => {\n    const ctx = buildInvoice(\n      shared,\n      inv,\n      k,\n      invoices.length,\n      docType,\n      srcCents\n    );\n\n    const key =\n      `${ctx.invoice.invoice_number ?? ''}|` +\n      `${ctx.invoice.po_number_raw ?? ''}`;\n\n    if (seen.has(key)) {\n      ctx.warnings.push(\n        'Same invoice/PO appears twice in this PDF'\n      );\n    }\n\n    seen.add(key);\n\n    out.push({ json: ctx });\n  });\n}\n\nreturn out;\n"
+        "jsCode": "\n/*\n * Parse LLM output, normalize, validate, and split into one item per invoice.\n * Uses:\n *   - Extract from File: extracted PDF text and PDF metadata\n *   - Extract PDFs: Outlook email and attachment metadata\n *\n * Bad documents become EXCEPTION items instead of stopping the batch.\n */\n\nconst llmItems = $input.all();\nconst extractedItems = $('Prep Docs').all();   // text + source + __meta, aligned 1:1 with the LLM items\nconst TOL = $('Build Config').first().json.cfg.INV_PROC_CONFIG.validation_tolerance;\n\n\nconst out = [];\n\nconst errText = e =>\n  typeof e === 'string' ? e : (e?.message || JSON.stringify(e));\n\nconst round2 = n => Math.round(n * 100) / 100;\n\n/*\n * Strict amount parser.\n * Accepts JSON numbers and printed amounts: 1,234.56  -234.89  (234.89)  234.89-  $1,234.56\n * Anything else is REJECTED (bad = true), never \"cleaned up\". The old version stripped every\n * non-digit character, so a corrupted token such as \"-234.!89!!89\" silently became -234.8989.\n */\nconst AMOUNT_RE = /^(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?$|^\\.\\d+$/;\n\nfunction parseAmount(v) {\n  if (v === null || v === undefined || v === '') return { value: null, bad: false };\n  if (typeof v === 'number') {\n    return Number.isFinite(v) ? { value: v, bad: false } : { value: null, bad: true };\n  }\n\n  let s = String(v).trim();\n  if (!s) return { value: null, bad: false };\n\n  let neg = false;\n  if (/^\\(.*\\)$/.test(s)) { neg = true; s = s.slice(1, -1).trim(); }\n  if (/-$/.test(s)) { neg = true; s = s.slice(0, -1).trim(); }\n  if (/^[-\\u2212\\u2013]/.test(s)) { neg = true; s = s.slice(1).trim(); }\n  s = s.replace(/^[$\\u20AC\\u00A3]\\s*/, '');\n\n  if (!AMOUNT_RE.test(s)) return { value: null, bad: true };\n\n  const n = Number(s.replace(/,/g, ''));\n  if (!Number.isFinite(n)) return { value: null, bad: true };\n\n  return { value: neg ? -n : n, bad: false };\n}\n\nconst num = v => parseAmount(v).value;\n\n/*\n * Every number printed in the document, as integer cents.\n * Used to prove that each amount the LLM returned really appears in the source text.\n */\nfunction buildSrcCents(text) {\n  const set = new Set();\n  const add = s => { const n = Number(s); if (Number.isFinite(n)) set.add(Math.round(n * 100)); };\n  for (const t of String(text).match(/\\d[\\d,]*(?:\\.\\d+)?|\\.\\d+/g) || []) {\n    add(t.replace(/,/g, ''));\n    // PDF text extraction can glue two numbers together (quantity 3 + price 149.99 -> 3149.99).\n    // For a decimal token with no thousands separators and 4+ integer digits, also accept its trailing digit groups.\n    const m = t.match(/^(\\d{4,})(\\.\\d+)$/);\n    if (m) for (let i = 1; i < m[1].length; i++) add(m[1].slice(i) + m[2]);\n  }\n  return set;\n}\n\n// Document types the prompt defines. Anything else is never processed as an invoice.\nconst ALLOWED_DOC_TYPES = ['INVOICE', 'CREDIT_MEMO', 'STATEMENT', 'MIXED', 'NOT_A_VALID_PDF'];\nconst ALLOWED_INVOICE_TYPES = ['INVOICE', 'CREDIT_MEMO'];\nconst normType = v => String(v ?? '').trim().toUpperCase().replace(/[\\s-]+/g, '_');\n\n// Statement amounts get the same checks as invoice amounts: readable, and present in the document text.\nfunction checkStatementAmounts(st, srcCents) {\n  const problems = [];\n  const chk = (v, label) => {\n    const r = parseAmount(v);\n    if (r.bad) problems.push(`${label} unreadable \"${String(v).slice(0, 40)}\"`);\n    else if (r.value !== null && r.value !== 0 && !srcCents.has(Math.round(Math.abs(r.value) * 100)))\n      problems.push(`${label} ${r.value} not found in document text`);\n  };\n  for (const k of ['previous_balance', 'payments', 'credits', 'current_charges', 'amount_due']) chk(st?.[k], k);\n  (Array.isArray(st?.transactions) ? st.transactions : []).forEach((t, i) => {\n    chk(t?.amount, `transaction ${i + 1} amount`);\n    chk(t?.balance, `transaction ${i + 1} balance`);\n  });\n  return problems;\n}\n\nconst MONEY_KEYS = [\n  'subtotal', 'freight', 'tax', 'invoice_total',\n  'amount_due', 'current_charges', 'previous_balance'\n];\n\nfunction normalizeStatement(st, warnings) {\n  if (!st || typeof st !== 'object') return st ?? null;\n  const o = { ...st };\n  const fix = (obj, k, label) => {\n    if (!(k in obj)) return;\n    const r = parseAmount(obj[k]);\n    if (r.bad) warnings.push(`Unreadable statement ${label} \"${String(obj[k]).slice(0, 40)}\"`);\n    obj[k] = r.value;\n  };\n  for (const k of ['previous_balance', 'payments', 'credits', 'current_charges', 'amount_due']) fix(o, k, k);\n  if (Array.isArray(o.transactions)) {\n    o.transactions = o.transactions.map((t, i) => {\n      const x = { ...(t || {}) };\n      fix(x, 'amount', `transaction ${i + 1} amount`);\n      fix(x, 'balance', `transaction ${i + 1} balance`);\n      return x;\n    });\n  }\n  return o;\n}\n\nconst pad = x => String(x).padStart(2, '0');\n\nfunction isoDate(v) {\n  if (!v) return null;\n\n  const s = String(v).trim();\n\n  // YYYY-MM-DD or YYYY-MM-DD followed by a time\n  let m = s.match(/^(\\d{4})-(\\d{1,2})-(\\d{1,2})/);\n\n  if (m) {\n    return `${m[1]}-${pad(m[2])}-${pad(m[3])}`;\n  }\n\n  // MM/DD/YYYY, MM-DD-YYYY, or MM.DD.YYYY\n  m = s.match(/^(\\d{1,2})[\\/.-](\\d{1,2})[\\/.-](\\d{2,4})$/);\n\n  if (m) {\n    const year = m[3].length === 2 ? '20' + m[3] : m[3];\n    return `${year}-${pad(m[1])}-${pad(m[2])}`;\n  }\n\n  const d = new Date(s);\n\n  if (!isNaN(d.getTime())) {\n    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;\n  }\n\n  return null;\n}\n\nfunction parseLLM(resp) {\n  if (!resp || resp.error) {\n    return {\n      error: 'LLM request failed' +\n        (resp?.error ? `: ${errText(resp.error)}` : '')\n    };\n  }\n\n  const choice = resp.choices?.[0];\n  const raw = choice?.message?.content;\n\n  const finish = choice?.finish_reason;\n  if (finish === 'length') {\n    return { error: 'LLM output truncated (finish_reason=length); raise glm_header_max_tokens' };\n  }\n  if (finish !== undefined && finish !== null && finish !== 'stop') {\n    return { error: `LLM did not finish normally (finish_reason=${finish})` };\n  }\n\n  if (!raw) {\n    return { error: 'LLM returned empty content' };\n  }\n\n  const cleaned = String(raw)\n    .replace(/^```(?:json)?\\s*/i, '')\n    .replace(/\\s*```\\s*$/, '')\n    .trim();\n\n  try {\n    return { data: JSON.parse(cleaned) };\n  } catch (e) {\n    const a = cleaned.indexOf('{');\n    const b = cleaned.lastIndexOf('}');\n\n    if (a >= 0 && b > a) {\n      try {\n        return { data: JSON.parse(cleaned.slice(a, b + 1)) };\n      } catch (e2) {\n        // Continue to the parsing error below.\n      }\n    }\n\n    const at = Number((/position (\\d+)/.exec(e.message) || [])[1]);\n    const near = Number.isFinite(at)\n      ? ' near: ' + JSON.stringify(cleaned.slice(Math.max(0, at - 30), at + 30))\n      : '';\n\n    return {\n      error: 'Could not parse LLM JSON: ' + e.message + near\n    };\n  }\n}\n\nconst pick = (o, keys) =>\n  Object.fromEntries(keys.map(k => [k, o?.[k] ?? null]));\n\n/*\n * Normalize one invoice or credit memo.\n */\nfunction buildInvoice(shared, inv, k, count, parentDocType, srcCents) {\n  const warnings = [];\n\n  // Strict amounts: unreadable or not-in-document values fail this invoice instead of flowing on.\n  const m = {};\n  const integrity = [];\n \n  for (const key of MONEY_KEYS) {\n    const r = parseAmount(inv[key]);\n    m[key] = r.value;\n \n    if (r.bad) {\n      integrity.push(`${key} unreadable \"${String(inv[key]).slice(0, 40)}\"`);\n    } else if (\n      r.value !== null &&\n      r.value !== 0 &&\n      !srcCents.has(Math.round(Math.abs(r.value) * 100))\n    ) {\n      integrity.push(`${key} ${r.value} not found in document text`);\n    }\n  }\n \n  // Multi-jurisdiction tax (and occasionally freight) is printed as several lines; the LLM returns\n  // the sum, which is not itself in the text. Accept it ONLY when the printed subtotal and total are\n  // both in the text and subtotal + tax + freight closes to the printed total. Everything else\n  // (unreadable values, totals that don't add up) still fails as before.\n  {\n    const inText = v => v !== null && v !== undefined && (v === 0 || srcCents.has(Math.round(Math.abs(v) * 100)));\n    const printedTotal = m.invoice_total ?? m.amount_due;\n    const anchorsOk = inText(m.subtotal) && inText(printedTotal);\n    for (const key of ['tax', 'freight']) {\n      const idx = integrity.findIndex(s => s === `${key} ${m[key]} not found in document text`);\n      if (idx < 0 || !anchorsOk) continue;\n      const closes = Math.abs(round2(m.subtotal + (m.tax ?? 0) + (m.freight ?? 0)) - printedTotal) <= TOL;\n      if (closes) {\n        integrity.splice(idx, 1);\n        warnings.push(`${key} ${m[key]} not printed as one amount (sum of several ${key} lines); accepted because subtotal + tax + freight = total`);\n      }\n    }\n  }\n\n  const individualDocType = normType(\n    inv.document_type ||\n    (String(inv.invoice_category || '').toUpperCase() === 'CREDIT_MEMO'\n      ? 'CREDIT_MEMO'\n      : parentDocType === 'MIXED'\n        ? 'INVOICE'\n        : parentDocType || 'INVOICE')\n  );\n\n  const lines = (Array.isArray(inv.line_items) ? inv.line_items : [])\n    .map(li => ({\n      sku: li.sku ?? null,\n      description: li.description ?? null,\n      quantity: num(li.quantity),\n      unit_price: num(li.unit_price),\n      amount: num(li.amount)\n    }))\n    .filter(l => l.sku || l.description || l.amount !== null);\n\n  const invoice = {\n    invoice_number: inv.invoice_number\n      ? String(inv.invoice_number).trim()\n      : null,\n\n    invoice_date: isoDate(inv.invoice_date),\n    invoice_date_raw: inv.invoice_date ?? null,\n\n    due_date: isoDate(inv.due_date),\n    due_date_raw: inv.due_date ?? null,\n\n    payment_terms: inv.payment_terms ?? inv.term ?? null,\n\n    po_number_raw: inv.po_number\n      ? String(inv.po_number).trim()\n      : null,\n\n    account_number: inv.account_number\n      ? String(inv.account_number).trim()\n      : null,\n\n    job_number: inv.job_number ?? null,\n    service_address: inv.service_address ?? null,\n    charge_summary: inv.charge_summary ?? null,\n\n    subtotal: m.subtotal,\n    freight: m.freight,\n    tax: m.tax,\n    invoice_total: m.invoice_total,\n    amount_due: m.amount_due,\n    current_charges: m.current_charges,\n    previous_balance: m.previous_balance,\n\n    line_items: lines\n  };\n\n  // PO repair: the LLM sometimes cuts the PO's trailing location suffix (printed \"128028373-1EL\" read as\n  // \"128028373-1\", or \"236145310-2cp\" read as \"236145310\" with \"2cp\" pushed into payment_terms).\n  // The printed text is authoritative: if the document shows the same PO continuing with a short suffix, use the printed PO.\n  {\n    const po = invoice.po_number_raw;\n    if (po && /^\\d{6,}(?:-\\d{1,3})?$/.test(po)) {\n      const poEsc = po.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');\n      const hit = new RegExp('(?:^|[^A-Za-z0-9-])' + poEsc + '(-?\\\\d{0,3}[A-Za-z]{2,3}\\\\d{0,3})(?![A-Za-z0-9-])').exec(String(shared.source_text || ''));\n      if (hit) {\n        invoice.po_number_raw = po + hit[1];\n        warnings.push(`PO completed from the document text: \"${po}\" read as \"${invoice.po_number_raw}\"`);\n        const lead = hit[1].replace(/^-/, '');\n        const terms = typeof invoice.payment_terms === 'string' ? invoice.payment_terms.trim() : '';\n        if (terms.toLowerCase().startsWith(lead.toLowerCase()) && /^(\\s|$)/.test(terms.slice(lead.length))) {\n          invoice.payment_terms = terms.slice(lead.length).trim() || null;\n        }\n      }\n    }\n  }\n\n  if (inv.due_date && !invoice.due_date) {\n    warnings.push(`Unreadable due date \"${inv.due_date}\"`);\n  }\n\n  /*\n   * Use printed totals when present.\n   * Derive totals only when they are missing.\n   */\n  const priced = lines.filter(l => l.amount !== null);\n  const lineSum = round2(\n    priced.reduce((sum, l) => sum + l.amount, 0)\n  );\n\n  if (invoice.subtotal === null && priced.length) {\n    invoice.subtotal = lineSum;\n    warnings.push('Subtotal derived from line items');\n  }\n\n  if (invoice.invoice_total === null) {\n    if (invoice.amount_due !== null) {\n      invoice.invoice_total = invoice.amount_due;\n      warnings.push('Invoice total taken from amount due');\n    } else if (invoice.subtotal !== null) {\n      invoice.invoice_total = round2(\n        invoice.subtotal +\n        (invoice.tax ?? 0) +\n        (invoice.freight ?? 0)\n      );\n\n      warnings.push(\n        'Invoice total derived from subtotal + tax + freight'\n      );\n    }\n  }\n\n  // Arithmetic checks: warnings only.\n  for (const line of lines) {\n    if (\n      line.quantity !== null &&\n      line.unit_price !== null &&\n      line.amount !== null &&\n      Math.abs(\n        round2(line.quantity * line.unit_price) - line.amount\n      ) > TOL\n    ) {\n      warnings.push(\n        `Line ${line.sku ?? line.description}: qty × price ≠ amount`\n      );\n    }\n  }\n\n  if (\n    priced.length &&\n    invoice.subtotal !== null &&\n    Math.abs(lineSum - invoice.subtotal) > TOL &&\n    Math.abs(\n      lineSum + (invoice.freight ?? 0) - invoice.subtotal\n    ) > TOL\n  ) {\n    warnings.push(\n      `Line items sum ${lineSum} ≠ subtotal ${invoice.subtotal}`\n    );\n  }\n\n  if (\n    invoice.subtotal !== null &&\n    invoice.invoice_total !== null\n  ) {\n    const expected = round2(\n      invoice.subtotal +\n      (invoice.tax ?? 0) +\n      (invoice.freight ?? 0)\n    );\n\n    const subtotalPlusTax = round2(\n      invoice.subtotal + (invoice.tax ?? 0)\n    );\n\n    if (\n      Math.abs(expected - invoice.invoice_total) > TOL &&\n      Math.abs(subtotalPlusTax - invoice.invoice_total) > TOL\n    ) {\n      warnings.push(\n        `Subtotal + tax + freight (${expected}) ≠ total ${invoice.invoice_total}`\n      );\n    }\n  }\n\n  // Utility bills sometimes have no printed invoice number.\n  if (\n    !invoice.invoice_number &&\n    invoice.account_number &&\n    invoice.invoice_date\n  ) {\n    invoice.invoice_number =\n      `${invoice.account_number.replace(/[^A-Za-z0-9]/g, '')}-` +\n      `${invoice.invoice_date.replace(/-/g, '')}`;\n\n    warnings.push(\n      `No invoice number printed; using ${invoice.invoice_number}`\n    );\n  }\n\n  // Printed totals must add up. A digit-level corruption almost always breaks this sum.\n  // Invoices with deposits, discounts or partial payments printed between subtotal and total can fail here legitimately; they go to review instead of posting.\n  const printedTotal = m.invoice_total ?? m.amount_due;\n  const totalsBad = m.subtotal !== null && printedTotal !== null &&\n    Math.abs(round2(m.subtotal + (m.tax ?? 0) + (m.freight ?? 0)) - printedTotal) > TOL &&\n    Math.abs(round2(m.subtotal + (m.tax ?? 0)) - printedTotal) > TOL;\n\n  const missing = [];\n\n  // No printed vendor name is OK on a PO invoice: the Direct flow takes the vendor from the ServiceTitan PO.\n  if (!shared.vendor?.name) {\n    if (invoice.po_number_raw) warnings.push('Vendor name not printed; will use the ServiceTitan PO vendor');\n    else missing.push('vendor name');\n  }\n  if (!invoice.invoice_number) missing.push('invoice number');\n  if (!invoice.invoice_date) missing.push('invoice date');\n  if (invoice.invoice_total === null) missing.push('invoice total');\n\n  /*\n   * Keep document_type and invoice_category at the top level\n   * so downstream routing can distinguish credit memos.\n   */\n  let invoiceCategory = inv.invoice_category ?? null;\n\n  if (\n    individualDocType === 'CREDIT_MEMO' &&\n    !invoiceCategory\n  ) {\n    invoiceCategory = 'CREDIT_MEMO';\n  }\n\n  const ctx = {\n    ...shared,\n\n    doc_id: `${shared.doc_id}-${k + 1}`,\n    invoice_index: k + 1,\n    invoice_count: count,\n\n    document_type: individualDocType,\n    invoice_category: invoiceCategory,\n\n    invoice,\n\n    warnings: [...(shared.warnings || []), ...warnings],\n\n    route: null,\n    status: null,\n    reason: null\n  };\n\n  if (!ALLOWED_INVOICE_TYPES.includes(individualDocType)) {\n    ctx.route = 'EXCEPTION';\n    ctx.status = 'UNSUPPORTED_DOCUMENT_TYPE';\n    ctx.reason = `Unsupported document_type \"${individualDocType || 'none'}\" on an invoice record`;\n  } else if (integrity.length) {\n    ctx.route = 'EXCEPTION';\n    ctx.status = 'EXTRACTION_FAILED';\n    ctx.reason = 'Amount check failed (LLM output does not match document text): ' + integrity.join('; ');\n  } else if (missing.length) {\n    ctx.route = 'EXCEPTION';\n    ctx.status = 'VALIDATION_FAILED';\n    ctx.reason = 'Missing: ' + missing.join(', ');\n  } else if (totalsBad) {\n    ctx.route = 'EXCEPTION';\n    ctx.status = 'TOTALS_MISMATCH';\n    ctx.reason = `Printed subtotal/tax/freight do not add up to printed total ${printedTotal}`;\n  }\n\n  return ctx;\n}\n\n/*\n * Process every LLM item separately.\n */\nfor (let i = 0; i < llmItems.length; i++) {\n  const extracted = extractedItems[i]?.json ?? {};\n  const meta = extracted.__meta ?? {};\n\n  const base = {\n    doc_id: `DOC-${Date.now()}-${i + 1}`,\n\n    message_id: meta.message_id ?? null,\n    subject: meta.subject ?? '',\n    body_preview: meta.body_preview ?? '',\n    from: meta.from ?? null,\n    received_at: meta.received_at ?? null,\n    file_name: meta.file_name ?? null,\n\n    page_count: extracted.numpages ?? null,\n    source: extracted.source ?? 'PDF',\n\n    warnings: [],\n    source_text: null\n  };\n\n  const fail = (status, reason, extra = {}) => {\n    out.push({\n      json: {\n        ...base,\n        ...extra,\n        route: 'EXCEPTION',\n        status,\n        reason\n      }\n    });\n  };\n\n  /*\n   * Extract from File returns PDF text in `text`.\n   * It does not return the old GLM OCR `md_results` field.\n   */\n  const pdfText = extracted.text;\n\n  if (\n    extracted.error ||\n    typeof pdfText !== 'string' ||\n    !pdfText.trim()\n  ) {\n    fail(\n      'EXTRACTION_FAILED',\n      'No document text (PDF text extraction failed or the email body was empty)' +\n      (extracted.error ? `: ${errText(extracted.error)}` : '')\n    );\n\n    continue;\n  }\n\n  base.source_text = pdfText;   // used by stage 2 (line items)\n  const srcCents = buildSrcCents(pdfText);\n\n  const parsed = parseLLM(llmItems[i].json);\n\n  if (parsed.error) {\n    fail('EXTRACTION_FAILED', parsed.error);\n    continue;\n  }\n\n  const d = parsed.data || {};\n\n  const docType = normType(d.document_type) || null;\n\n  const shared = {\n    ...base,\n\n    document_type: docType,\n    document_title: d.document_title ?? null,\n\n    vendor: pick(d.vendor, [\n      'name', 'account', 'address', 'city', 'state', 'zip'\n    ]),\n\n    customer: pick(d.customer, [\n      'name', 'account', 'address', 'city', 'state', 'zip'\n    ]),\n\n    ship_to: pick(d.ship_to, [\n      'name', 'street', 'city', 'state', 'zip', 'full_address'\n    ]),\n\n    llm_exceptions: Array.isArray(d.exceptions)\n      ? d.exceptions.map(String)\n      : []\n  };\n\n  // SHIP-TO FALLBACK (same rule as the prompt, enforced here because the LLM does not always follow it):\n  // when no Ship To address was extracted, the only customer address printed is the Ship To.\n  // Only the customer block is used, never the vendor or remit-to address.\n  const hasAddr = o => !!(o && (o.street || o.city || o.state || o.zip || o.full_address));\n  const cu = shared.customer;\n  if (!hasAddr(shared.ship_to) && (cu.address || cu.city || cu.state || cu.zip)) {\n    shared.ship_to = {\n      name: shared.ship_to?.name ?? cu.name ?? null,\n      street: cu.address ?? null,\n      city: cu.city ?? null,\n      state: cu.state ?? null,\n      zip: cu.zip ?? null,\n      full_address: [cu.address, [cu.city, cu.state].filter(Boolean).join(', '), cu.zip].filter(Boolean).join(' ') || null\n    };\n    shared.customer = { ...cu, address: null, city: null, state: null, zip: null };\n  }\n\n  // The document type must be one the prompt defines.\n  if (!ALLOWED_DOC_TYPES.includes(docType)) {\n    fail('UNSUPPORTED_DOCUMENT_TYPE', `Unsupported document_type \"${docType ?? 'none'}\" returned by the LLM`, shared);\n    continue;\n  }\n\n  // Not a billing document: never read invoice or statement data from it.\n  if (docType === 'NOT_A_VALID_PDF') {\n    fail('NOT_A_VALID_PDF', 'Not a billing document' + (d.document_title ? ` (title: ${d.document_title})` : ''), shared);\n    continue;\n  }\n\n  // Statements follow their own route, but only when the document itself is a STATEMENT\n  // (or a MIXED document that really carries statement transactions). An INVOICE is never turned into a statement.\n  // A statement may carry copies of its invoices after it: the statement wins and those invoices are ignored.\n  const stObj = d.statement && typeof d.statement === 'object' ? d.statement : null;\n  const stTxCount = Array.isArray(stObj?.transactions) ? stObj.transactions.length : 0;\n  const isStatement = docType === 'STATEMENT' || (docType === 'MIXED' && stTxCount > 0);\n\n  if (isStatement) {\n    if (!stObj) {\n      fail('STATEMENT_INCOMPLETE', 'Classified as STATEMENT but no statement data was returned', shared);\n      continue;\n    }\n    if (!stTxCount) {\n      fail('STATEMENT_INCOMPLETE', 'Statement has no transactions to reconcile', shared);\n      continue;\n    }\n    const stProblems = checkStatementAmounts(stObj, srcCents);\n    if (stProblems.length) {\n      fail('EXTRACTION_FAILED',\n        `Statement amount check failed (${stProblems.length}): ` + stProblems.slice(0, 10).join('; ') + (stProblems.length > 10 ? '; ...' : ''),\n        shared);\n      continue;\n    }\n\n    const stWarnings = [];\n    const ignored = Array.isArray(d.invoices) ? d.invoices.length : 0;\n    if (ignored) stWarnings.push(`${ignored} invoice(s) attached to the statement were ignored`);\n    const statement = normalizeStatement(stObj, stWarnings);\n\n    out.push({\n      json: {\n        ...shared,\n        document_type: 'STATEMENT',\n        warnings: [...(shared.warnings || []), ...stWarnings],\n        statement,\n        route: 'STATEMENT',\n        status: null,\n        reason: null\n      }\n    });\n\n    continue;\n  }\n\n  const invoices = Array.isArray(d.invoices)\n    ? d.invoices\n    : [];\n\n  /*\n   * MIXED does not automatically mean failure.\n   * If the LLM returned individual records, process each one.\n   */\n  if (docType === 'MIXED' && !invoices.length) {\n    fail(\n      'TRIAGE_MIXED',\n      'LLM classified the PDF as MIXED but returned no individual documents',\n      shared\n    );\n\n    continue;\n  }\n\n  if (!invoices.length) {\n    fail(\n      'NO_INVOICE_FOUND',\n      `No invoice found (document_type: ${docType ?? 'unknown'})`,\n      shared\n    );\n\n    continue;\n  }\n\n  const seen = new Set();\n\n  invoices.forEach((inv, k) => {\n    const ctx = buildInvoice(\n      shared,\n      inv,\n      k,\n      invoices.length,\n      docType,\n      srcCents\n    );\n\n    const key =\n      `${ctx.invoice.invoice_number ?? ''}|` +\n      `${ctx.invoice.po_number_raw ?? ''}`;\n\n    if (seen.has(key)) {\n      ctx.warnings.push(\n        'Same invoice/PO appears twice in this PDF'\n      );\n    }\n\n    seen.add(key);\n\n    out.push({ json: ctx });\n  });\n}\n\nreturn out;\n"
       }
     },
     {
@@ -1659,7 +2242,7 @@
         10128
       ],
       "parameters": {
-        "jsCode": "// Deterministic location resolver: PO suffix regex, ship-to, service address.\n// Location data (codes, aliases, entities, ST tenant, active flag) comes from the Location_Master data table.\n// Only the resolver's rules come from summers.datastore.config.keys (LOCATION_CONFIG).\nconst L = $('Build Config').first().json.cfg.LOCATION_CONFIG;\nconst CONFIG = {\n  LOC_COLS: { code: 'location_code', aliases: 'code_aliases', active: 'active', entity: 'sage_entity_id',\n              sageLocation: 'sage_location_id', name: 'location_name', city: 'city', zip: 'zip', tenant: 'st_tenant_id' },\n  CONFLICT_POLICY: L.conflict_policy,   // 'strict': any disagreement is an exception. 'po_wins': PO suffix overrides (flagged for review).\n  ENABLE_LLM_FALLBACK: L.enable_llm_fallback === true,\n};\n\nconst ctx = $json;\nif (ctx.route) return [{ json: ctx }];   // already routed (exception or statement)\n\nconst up = v => String(v ?? '').trim().toUpperCase();\nconst lc = v => String(v ?? '').trim().toLowerCase();\nconst zip5 = v => (String(v ?? '').match(/\\b(\\d{5})(?:-\\d{4})?\\b/) || [])[1] || null;\nconst reEsc = s => s.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');\nconst C = CONFIG.LOC_COLS;\n\nconst locRows = $('Load Location Master').all().map(i => i.json).filter(r => r && Object.keys(r).length && !r.error);\n\nconst splitCodes = v => up(v).split(/[\\s,\\/;|]+/).filter(Boolean);\nconst LOCATION_CODES = [...new Set(locRows.flatMap(r => splitCodes(r[C.code])))];\nconst CODE_ALIASES = {};\nfor (const r of locRows) { const main = splitCodes(r[C.code])[0]; if (main) for (const a of splitCodes(r[C.aliases])) CODE_ALIASES[a] = main; }\nconst toCode = tok => CODE_ALIASES[tok] || (LOCATION_CODES.includes(tok) ? tok : null);\nconst rowCodes = r => up(r[C.code]).split(/[\\s,\\/;|]+/).map(toCode).filter(Boolean);\nconst byCode = {};\nfor (const r of locRows) for (const c of rowCodes(r)) if (!byCode[c]) byCode[c] = r;\nconst codeForRow = r => rowCodes(r)[0] || null;\nfunction info(code) {\n  const r = byCode[code] || {};\n  const entity = r[C.entity] ? String(r[C.entity]).trim() : null;\n  return {\n    entity_id: entity,\n    sage_location_id: r[C.sageLocation] ? String(r[C.sageLocation]).trim() : entity,\n    name: r[C.name] ?? entity ?? code,\n    st_tenant_id: r[C.tenant] ? String(r[C.tenant]).trim() : null,\n    active: r[C.active] === true,\n  };\n}\n\n// ---- PO normalize (also gives the ServiceTitan search number) ----\nconst poRaw = ctx.invoice?.po_number_raw || '';\nconst poNorm = up(poRaw).replace(/\\s+/g, '');\n// Any printed PO goes to ServiceTitan. Numeric POs are normalized (base-NNN); other POs (e.g. \"JOHN MOODY\") are searched as printed.\nconst poNumeric = /^\\d{6,}/.test(poNorm);\nconst poValid = !!poNorm;\nlet stSearch = poValid && !poNumeric ? String(poRaw).trim().replace(/\\s+/g, ' ') : null;\nif (poNumeric) {\n  const base = poNorm.match(/^\\d+/)[0];\n  const sub = poNorm.slice(base.length).match(/^-(\\d{1,3})/);\n  stSearch = sub ? `${base}-${String(parseInt(sub[1], 10)).padStart(3, '0')}` : base;\n}\nctx.po = { raw: poRaw || null, normalized: poNorm || null, valid: poValid, numeric: poNumeric, st_search_number: stSearch };\n\nconst candidates = [];\n\n// 1. PO suffix: digits, optional -NNN, then the 2-3 letter location token.\nif (poNumeric) {\n  const m = poNorm.match(/^\\d{6,}(?:-\\d{0,3})?([A-Z]{2,3})/);\n  if (m) {\n    const tok = m[1];\n    const code = toCode(tok) || (tok.length === 3 ? toCode(tok.slice(0, 2)) : null);\n    if (code) candidates.push({ source: 'PO_SUFFIX', code, evidence: tok });\n  }\n}\n\n// 2/3. Ship-to is always evaluated (so a PO suffix that disagrees with it is caught by the conflict policy): use the CITY, ZIP only if no city.\n// The service address is only a fallback when nothing else produced a candidate.\nconst normPlace = v => lc(v).replace(/\\b(summers|of|plumbing|heating|cooling|and|phc|inc|llc)\\b|&/g, ' ')\n  .replace(/\\bfort\\b/g, 'ft').replace(/\\bsaint\\b/g, 'st').replace(/[^a-z0-9]/g, '');\nconst placeRow = v => { const n = normPlace(v); return n ? locRows.find(r => [r[C.city], r[C.entity], r[C.name]].some(x => normPlace(x) === n)) : null; };\nfunction matchAddress(source, city, text) {\n  let hit = placeRow(city), how = hit ? `city ${city}` : null;\n  if (!hit && !city) {\n    const z = zip5(text);\n    hit = z ? locRows.find(r => zip5(r[C.zip]) === z) : null;\n    how = hit ? `zip ${z}` : null;\n  }\n  if (!hit && !city && text) {\n    const t = ' ' + lc(text).replace(/[^a-z0-9]+/g, ' ') + ' ';\n    hit = locRows.find(r => [r[C.city], r[C.entity]].some(x => { const c = lc(x).replace(/[^a-z0-9]+/g, ' ').trim(); return c && t.includes(` ${c} `); }));\n    how = 'city in address text';\n  }\n  const code = hit ? codeForRow(hit) : null;\n  if (code) candidates.push({ source, code, evidence: how });\n  return code;\n}\nconst st = ctx.ship_to || {};\nif (st.city || st.zip || st.full_address) {\n  matchAddress('SHIP_TO', st.city, [st.full_address, st.street, st.city, st.state, st.zip].filter(Boolean).join(' '));\n}\nconst svc = ctx.invoice?.service_address || '';\nif (svc && !candidates.length) matchAddress('SERVICE_ADDRESS', null, svc);\n\n// ---- Decide ----\nconst codes = [...new Set(candidates.map(c => c.code))];\nconst loc = { status: 'NONE', code: null, entity_id: null, sage_location_id: null, name: null,\n              st_tenant_id: null, active: false, method: null, needs_review: false, candidates, allow_fallback: false };\nconst apply = (code, method) => Object.assign(loc, { status: 'RESOLVED', code, method, ...info(code) });\n\nif (codes.length === 1) {\n  apply(codes[0], candidates.map(c => c.source).join('+'));\n} else if (codes.length > 1) {\n  const po = candidates.find(c => c.source === 'PO_SUFFIX');\n  if (CONFIG.CONFLICT_POLICY === 'po_wins' && po) {\n    apply(po.code, 'PO_SUFFIX (override)');\n    loc.needs_review = true;\n    ctx.warnings.push('Location sources disagree; PO suffix used: ' + candidates.map(c => `${c.source}=${c.code}`).join(', '));\n  } else {\n    loc.status = 'CONFLICT';\n    loc.method = candidates.map(c => `${c.source}=${c.code} (${c.evidence})`).join(', ');\n  }\n} else if (CONFIG.ENABLE_LLM_FALLBACK && Object.keys(byCode).length) {\n  loc.allow_fallback = true;\n  loc.options = Object.fromEntries(Object.keys(byCode).map(c => [c, info(c)]));\n  const list = Object.entries(byCode).map(([c, r]) => `${c}: ${[r[C.name] ?? r[C.entity], r[C.city], r[C.zip]].filter(Boolean).join(', ')}`).join('\\n');\n  const shipTo = st.full_address || [st.street, st.city, st.state, st.zip].filter(Boolean).join(', ') || 'n/a';\n  loc.fallback_prompt =\n    `Pick the Summers PHC branch this vendor invoice belongs to, using only the evidence below.\\n\\nBranches:\\n${list}\\n\\n` +\n    `Ship-to: ${shipTo}\\nService address: ${svc || 'n/a'}\\nPO number: ${poRaw || 'n/a'}\\n` +\n    `Email subject: ${ctx.subject || 'n/a'}\\nFile name: ${ctx.file_name || 'n/a'}\\n\\n` +\n    `Answer with ONLY the two-letter branch code, or NONE if the evidence does not clearly point to one branch.`;\n}\n// Plain-English \"how the location was found\", for the Daily Report.\nconst LABEL = { PO_SUFFIX: 'PO Number', SHIP_TO: 'Ship To', SERVICE_ADDRESS: 'Service Address' };\nloc.method_detail = candidates.length\n  ? candidates.map(c => `${LABEL[c.source] || c.source} (${c.source === 'PO_SUFFIX' ? `\"${poRaw}\"` : c.evidence}) = ${c.code}`).join('; ')\n  : null;\nctx.location = loc;\nreturn [{ json: ctx }];"
+        "jsCode": "// Deterministic location resolver: PO suffix regex, ship-to, service address.\n// Location data (codes, aliases, entities, ST tenant, active flag) comes from the Location_Master data table.\n// Only the resolver's rules come from summers.datastore.config.keys (LOCATION_CONFIG).\nconst L = $('Build Config').first().json.cfg.LOCATION_CONFIG;\nconst CONFIG = {\n  LOC_COLS: { code: 'location_code', aliases: 'code_aliases', active: 'active', entity: 'sage_entity_id',\n              sageLocation: 'sage_location_id', name: 'location_name', city: 'city', zip: 'zip', tenant: 'st_tenant_id' },\n  CONFLICT_POLICY: L.conflict_policy,   // 'strict': any disagreement is an exception. 'po_wins': PO suffix overrides (flagged for review).\n  ENABLE_LLM_FALLBACK: L.enable_llm_fallback === true,\n};\n\nconst ctx = $json;\nif (ctx.route) return [{ json: ctx }];   // already routed (exception or statement)\n\nconst up = v => String(v ?? '').trim().toUpperCase();\nconst lc = v => String(v ?? '').trim().toLowerCase();\nconst zip5 = v => (String(v ?? '').match(/\\b(\\d{5})(?:-\\d{4})?\\b/) || [])[1] || null;\nconst reEsc = s => s.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');\nconst C = CONFIG.LOC_COLS;\n\nconst locRows = $('Load Location Master').all().map(i => i.json).filter(r => r && Object.keys(r).length && !r.error);\n\nconst splitCodes = v => up(v).split(/[\\s,\\/;|]+/).filter(Boolean);\nconst LOCATION_CODES = [...new Set(locRows.flatMap(r => splitCodes(r[C.code])))];\nconst CODE_ALIASES = {};\nfor (const r of locRows) { const main = splitCodes(r[C.code])[0]; if (main) for (const a of splitCodes(r[C.aliases])) CODE_ALIASES[a] = main; }\nconst toCode = tok => CODE_ALIASES[tok] || (LOCATION_CODES.includes(tok) ? tok : null);\nconst rowCodes = r => up(r[C.code]).split(/[\\s,\\/;|]+/).map(toCode).filter(Boolean);\nconst byCode = {};\nfor (const r of locRows) for (const c of rowCodes(r)) if (!byCode[c]) byCode[c] = r;\nconst codeForRow = r => rowCodes(r)[0] || null;\nfunction info(code) {\n  const r = byCode[code] || {};\n  const entity = r[C.entity] ? String(r[C.entity]).trim() : null;\n  return {\n    entity_id: entity,\n    sage_location_id: r[C.sageLocation] ? String(r[C.sageLocation]).trim() : entity,\n    name: r[C.name] ?? entity ?? code,\n    st_tenant_id: r[C.tenant] ? String(r[C.tenant]).trim() : null,\n    active: r[C.active] === true,\n  };\n}\n\n// ---- PO normalize (also gives the ServiceTitan search number) ----\nconst poRaw = ctx.invoice?.po_number_raw || '';\nconst poNorm = up(poRaw).replace(/\\s+/g, '');\n// Any printed PO goes to ServiceTitan. Numeric POs are normalized (base-NNN); other POs (e.g. \"JOHN MOODY\") are searched as printed.\nconst poNumeric = /^\\d{6,}/.test(poNorm);\nconst poValid = !!poNorm;\nlet stSearch = poValid && !poNumeric ? String(poRaw).trim().replace(/\\s+/g, ' ') : null;\nif (poNumeric) {\n  const base = poNorm.match(/^\\d+/)[0];\n  const sub = poNorm.slice(base.length).match(/^-(\\d{1,3})/);\n  stSearch = sub ? `${base}-${String(parseInt(sub[1], 10)).padStart(3, '0')}` : base;\n}\nctx.po = { raw: poRaw || null, normalized: poNorm || null, valid: poValid, numeric: poNumeric, st_search_number: stSearch };\n\nconst candidates = [];\n\n// 1. PO code (primary source): a PO with a 6+ digit number carries the 2-letter location code in a short\n// letter group before or after the digits (\"236145310-2CP\", \"172690459-1BBD20\", \"135198263DA\", \"BB-172690459\").\n// The first group holding a Location_Master code wins; single letters and longer words are ignored.\nif (/\\d{6,}/.test(poNorm)) {\n  for (const run of poNorm.match(/[A-Z]+/g) || []) {\n    if (run.length < 2 || run.length > 3) continue;\n    let tok = run, code = toCode(run);\n    for (let i = 0; !code && i + 2 <= run.length; i++) { tok = run.slice(i, i + 2); code = toCode(tok); }\n    if (code) { candidates.push({ source: 'PO_SUFFIX', code, evidence: tok }); break; }\n  }\n}\n\n// 2/3. Ship-to is always evaluated (so a PO suffix that disagrees with it is caught by the conflict policy): use the CITY, ZIP only if no city.\n// The service address is only a fallback when nothing else produced a candidate.\nconst normPlace = v => lc(v).replace(/\\b(summers|of|plumbing|heating|cooling|and|phc|inc|llc)\\b|&/g, ' ')\n  .replace(/\\bfort\\b/g, 'ft').replace(/\\bsaint\\b/g, 'st').replace(/[^a-z0-9]/g, '');\nconst placeRow = v => { const n = normPlace(v); return n ? locRows.find(r => [r[C.city], r[C.entity], r[C.name]].some(x => normPlace(x) === n)) : null; };\nfunction matchAddress(source, city, text) {\n  let hit = placeRow(city), how = hit ? `city ${city}` : null;\n  if (!hit && !city) {\n    const z = zip5(text);\n    hit = z ? locRows.find(r => zip5(r[C.zip]) === z) : null;\n    how = hit ? `zip ${z}` : null;\n  }\n  if (!hit && !city && text) {\n    const t = ' ' + lc(text).replace(/[^a-z0-9]+/g, ' ') + ' ';\n    hit = locRows.find(r => [r[C.city], r[C.entity]].some(x => { const c = lc(x).replace(/[^a-z0-9]+/g, ' ').trim(); return c && t.includes(` ${c} `); }));\n    how = 'city in address text';\n  }\n  const code = hit ? codeForRow(hit) : null;\n  if (code) candidates.push({ source, code, evidence: how });\n  return code;\n}\nconst st = ctx.ship_to || {};\nif (st.city || st.zip || st.full_address) {\n  matchAddress('SHIP_TO', st.city, [st.full_address, st.street, st.city, st.state, st.zip].filter(Boolean).join(' '));\n}\nconst svc = ctx.invoice?.service_address || '';\nif (svc && !candidates.length) matchAddress('SERVICE_ADDRESS', null, svc);\n\n// ---- Decide ----\nconst codes = [...new Set(candidates.map(c => c.code))];\nconst loc = { status: 'NONE', code: null, entity_id: null, sage_location_id: null, name: null,\n              st_tenant_id: null, active: false, method: null, needs_review: false, candidates, allow_fallback: false };\nconst apply = (code, method) => Object.assign(loc, { status: 'RESOLVED', code, method, ...info(code) });\n\nif (codes.length === 1) {\n  apply(codes[0], candidates.map(c => c.source).join('+'));\n} else if (codes.length > 1) {\n  const po = candidates.find(c => c.source === 'PO_SUFFIX');\n  if (CONFIG.CONFLICT_POLICY === 'po_wins' && po) {\n    apply(po.code, 'PO_SUFFIX (override)');\n    loc.needs_review = true;\n    ctx.warnings.push('Location sources disagree; PO suffix used: ' + candidates.map(c => `${c.source}=${c.code}`).join(', '));\n  } else {\n    loc.status = 'CONFLICT';\n    loc.method = candidates.map(c => `${c.source}=${c.code} (${c.evidence})`).join(', ');\n  }\n} else if (CONFIG.ENABLE_LLM_FALLBACK && Object.keys(byCode).length) {\n  loc.allow_fallback = true;\n  loc.options = Object.fromEntries(Object.keys(byCode).map(c => [c, info(c)]));\n  const list = Object.entries(byCode).map(([c, r]) => `${c}: ${[r[C.name] ?? r[C.entity], r[C.city], r[C.zip]].filter(Boolean).join(', ')}`).join('\\n');\n  const shipTo = st.full_address || [st.street, st.city, st.state, st.zip].filter(Boolean).join(', ') || 'n/a';\n  loc.fallback_prompt =\n    `Pick the Summers PHC branch this vendor invoice belongs to, using only the evidence below.\\n\\nBranches:\\n${list}\\n\\n` +\n    `Ship-to: ${shipTo}\\nService address: ${svc || 'n/a'}\\nPO number: ${poRaw || 'n/a'}\\n` +\n    `Email subject: ${ctx.subject || 'n/a'}\\nFile name: ${ctx.file_name || 'n/a'}\\n\\n` +\n    `Answer with ONLY the two-letter branch code, or NONE if the evidence does not clearly point to one branch.`;\n}\n// Plain-English \"how the location was found\", for the Daily Report.\nconst LABEL = { PO_SUFFIX: 'PO Number', SHIP_TO: 'Ship To', SERVICE_ADDRESS: 'Service Address' };\nloc.method_detail = candidates.length\n  ? candidates.map(c => `${LABEL[c.source] || c.source} (${c.source === 'PO_SUFFIX' ? `\"${poRaw}\"` : c.evidence}) = ${c.code}`).join('; ')\n  : null;\n// Discrepancies are logged, not raised: sources that disagree (PO used), and a PO without a location code (Ship To used).\nconst hasPoCode = candidates.some(c => c.source === 'PO_SUFFIX');\nif (loc.status === 'RESOLVED' && codes.length > 1 && loc.method_detail) loc.method_detail += '; sources differ, PO Number used';\nif (loc.status === 'RESOLVED' && poValid && !hasPoCode && candidates.length) {\n  loc.method_detail += '; no location code in PO';\n  (ctx.warnings ||= []).push(`No location code found in PO \"${poRaw}\"; location ${loc.code} taken from ${LABEL[candidates[0].source] || candidates[0].source}`);\n}\nctx.location = loc;\nreturn [{ json: ctx }];"
       }
     },
     {
@@ -1931,7 +2514,6 @@
           "waitForSubWorkflow": true
         }
       },
-      "disabled": true,
       "notesInFlow": true,
       "alwaysOutputData": true,
       "onError": "continueRegularOutput"
@@ -2075,6 +2657,17 @@
         ]
       ]
     },
+    "Done": {
+      "main": [
+        [
+          {
+            "node": "Messages Fully Posted",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "Extract from File": {
       "main": [
         [
@@ -2138,6 +2731,13 @@
             "type": "main",
             "index": 0
           }
+        ],
+        [
+          {
+            "node": "Log Email Without Invoice",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
@@ -2146,6 +2746,13 @@
         [
           {
             "node": "Load Location Master",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Non-Billing Document",
             "type": "main",
             "index": 0
           }
@@ -2230,6 +2837,17 @@
         [
           {
             "node": "Loop Invoices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Messages Fully Posted": {
+      "main": [
+        [
+          {
+            "node": "Microsoft Outlook: “Mark Message Read”",
             "type": "main",
             "index": 0
           }
@@ -2563,7 +3181,9 @@
   },
   "settings": {
     "executionOrder": "v1",
-    "binaryMode": "separate"
+    "binaryMode": "separate",
+    "availableInMCP": true,
+    "errorWorkflow": "Og4XMjYHU0N7AMDH"
   },
   "tags": [
     "AP Automation",
